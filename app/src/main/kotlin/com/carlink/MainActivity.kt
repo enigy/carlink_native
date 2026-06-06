@@ -394,6 +394,8 @@ class MainActivity : ComponentActivity() {
                 logInfo("[LIFECYCLE] Manager disconnected — auto-starting connection", tag = "MAIN")
                 CoroutineScope(Dispatchers.IO).launch {
                     manager.start()
+                    // Chain reconnect if start() failed (permission timeout, device not found)
+                    manager.requestReconnect()
                 }
             }
         }

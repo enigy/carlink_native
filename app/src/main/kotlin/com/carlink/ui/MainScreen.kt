@@ -166,6 +166,10 @@ fun MainScreen(
             if (!hasStartedConnection) {
                 hasStartedConnection = true
                 carlinkManager.start()
+                // If the initial connect failed (permission timeout, device not
+                // found), kick the reconnect loop so attempts 2-5 fire automatically
+                // instead of leaving the app stuck on "USB permission denied".
+                carlinkManager.requestReconnect()
             }
         }
     }

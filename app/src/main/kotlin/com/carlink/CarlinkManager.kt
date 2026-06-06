@@ -1198,6 +1198,23 @@ class CarlinkManager(
         withContext(Dispatchers.IO) { stop() }
         delay(2000)
         withContext(Dispatchers.IO) { start() }
+        // Chain reconnect if start() failed (permission timeout, device not found)
+        requestReconnect()
+    }
+
+    /**
+     * Request a reconnect attempt if the adapter is disconnected.
+     *
+     * Public entry point for components that need retry behaviour after an
+     * initial [start] failure (e.g. permission timeout on first boot).
+     * Safe to call from any state — if not DISCONNECTED, this is a no-op.
+     * The internal [scheduleReconnect] handles attempt-count, backoff, and
+     * screen-power gating.
+     */
+    fun requestReconnect() {
+        if (state == State.DISCONNECTED) {
+            scheduleReconnect()
+        }
     }
 
     /**
@@ -2975,7 +2992,16 @@ class CarlinkManager(
                         withContext(Dispatchers.IO) { start() }
                     } catch (e: Exception) {
                         logError("[RECONNECT] Reconnection failed: ${e.message}", tag = Logger.Tags.USB)
-                        // handleError will be called by start() failure, which will schedule next attempt
+                    }
+
+                    // Chain to the next attempt if start() left us disconnected.
+                    // start() returns normally (no throw) on permission-timeout and
+                    // device-not-found — it sets state=DISCONNECTED and returns.
+                    // handleError() only fires on mid-session USB disconnects, so
+                    // without this check, attempts 2-5 would never fire after a
+                    // permission timeout on wake-from-sleep (the v162 stuck bug).
+                    if (state == State.DISCONNECTED) {
+                        scheduleReconnect()
                     }
                 } else {
                     logInfo("[RECONNECT] Already connected, cancelling reconnect", tag = Logger.Tags.USB)
