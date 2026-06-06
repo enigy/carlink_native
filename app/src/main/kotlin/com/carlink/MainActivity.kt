@@ -7,8 +7,10 @@ import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.content.pm.PackageManager
+import android.hardware.display.DisplayManager
 import android.hardware.usb.UsbDevice
 import android.hardware.usb.UsbManager
+import android.view.Display
 import android.os.Build
 import android.os.Bundle
 import android.os.Handler
@@ -203,6 +205,68 @@ class MainActivity : ComponentActivity() {
             }
         }
 
+    /**
+     * Head-unit display power receiver. On some vehicles the USB port stays powered 24/7, so
+     * when the truck is off the adapter free-runs and re-enumerates endlessly with no phone —
+     * driving the reconnect + USB-permission-prompt churn. We track ACTION_SCREEN_OFF/ON
+     * (display power, NOT app foreground — onStop also fires when switching apps) and let
+     * CarlinkManager go dormant while the screen is off, then auto-reconnect when it comes back.
+     */
+    private val screenReceiver =
+        object : BroadcastReceiver() {
+            override fun onReceive(
+                context: Context,
+                intent: Intent,
+            ) {
+                when (intent.action) {
+                    Intent.ACTION_SCREEN_OFF -> {
+                        logInfo("[POWER] ACTION_SCREEN_OFF — head unit display off", tag = "MAIN")
+                        carlinkManager?.onScreenOff()
+                    }
+
+                    Intent.ACTION_SCREEN_ON -> {
+                        logInfo("[POWER] ACTION_SCREEN_ON — head unit display on", tag = "MAIN")
+                        carlinkManager?.onScreenOn()
+                    }
+                }
+            }
+        }
+
+    /**
+     * Tracks the last-known interactive state so the [displayListener] only acts on actual
+     * on/off transitions (onDisplayChanged also fires for rotation, brightness, etc.).
+     */
+    private var lastDisplayInteractive: Boolean = true
+
+    /**
+     * Display-power listener — the robust signal for head-unit on/off. More reliable than the
+     * ACTION_SCREEN_ON/OFF broadcast (which we also keep), and it reports the actual display
+     * STATE so we can gate on it. Feeds the same CarlinkManager dormancy as [screenReceiver];
+     * both paths are idempotent.
+     */
+    private val displayListener =
+        object : DisplayManager.DisplayListener {
+            override fun onDisplayAdded(displayId: Int) {}
+
+            override fun onDisplayRemoved(displayId: Int) {}
+
+            override fun onDisplayChanged(displayId: Int) {
+                if (displayId != Display.DEFAULT_DISPLAY) return
+                val dm = getSystemService(Context.DISPLAY_SERVICE) as? DisplayManager ?: return
+                val state = dm.getDisplay(Display.DEFAULT_DISPLAY)?.state ?: return
+                val interactive = state == Display.STATE_ON
+                if (interactive == lastDisplayInteractive) return // not an on/off transition
+                lastDisplayInteractive = interactive
+                if (interactive) {
+                    logInfo("[POWER] Display ON (state=$state) — resuming", tag = "MAIN")
+                    carlinkManager?.onScreenOn()
+                } else {
+                    logInfo("[POWER] Display OFF (state=$state) — suspending", tag = "MAIN")
+                    carlinkManager?.onScreenOff()
+                }
+            }
+        }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
@@ -241,6 +305,10 @@ class MainActivity : ComponentActivity() {
 
         // Register USB detachment receiver for immediate disconnect detection
         registerUsbDetachReceiver()
+
+        // Register head-unit display-power signals for screen-off dormancy / screen-on wake
+        registerScreenReceiver()
+        registerDisplayListener()
 
         // Launch CarAppActivity to trigger Templates Host → cluster binding chain.
         // Skipped entirely when cluster navigation is disabled — no reason to start
@@ -336,6 +404,10 @@ class MainActivity : ComponentActivity() {
 
         // Unregister USB detachment receiver
         unregisterUsbDetachReceiver()
+
+        // Unregister head-unit display-power signals
+        unregisterScreenReceiver()
+        unregisterDisplayListener()
 
         // Release the CarlinkManager (it detaches its transport callback from the
         // MediaSession but does NOT release it — see CarlinkManager.release KDoc).
@@ -495,7 +567,9 @@ class MainActivity : ComponentActivity() {
         // /etc/airplay.conf via AdapterConfig.oemIconVisible which generateAirplayConfig now
         // honors.
         val platformInfo = com.carlink.platform.PlatformDetector.detect(this)
-        val oemIconVisibleForPlatform = !platformInfo.requiresImmersiveDefaults()
+        // Always show the CarPlay OEM exit icon — the upstream default hides it on
+        // gminfo37, but the user needs it to leave CarPlay mode on the GM head unit.
+        val oemIconVisibleForPlatform = true
 
         // Load user-configured adapter settings from sync cache (instant, no I/O blocking)
         // These are optional - only configured settings are sent to the adapter
@@ -914,6 +988,50 @@ class MainActivity : ComponentActivity() {
             registerReceiver(usbDetachReceiver, filter)
         }
         logInfo("[USB_DETACH] Registered USB detachment receiver", tag = "MAIN")
+    }
+
+    /**
+     * Registers the head-unit display-power receiver (ACTION_SCREEN_ON/OFF). These are
+     * protected system broadcasts that can only be received via a runtime-registered receiver
+     * (not the manifest). Drives CarlinkManager's screen-off dormancy / screen-on wake.
+     */
+    private fun registerScreenReceiver() {
+        val filter =
+            IntentFilter().apply {
+                addAction(Intent.ACTION_SCREEN_ON)
+                addAction(Intent.ACTION_SCREEN_OFF)
+            }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            registerReceiver(screenReceiver, filter, RECEIVER_NOT_EXPORTED)
+        } else {
+            registerReceiver(screenReceiver, filter)
+        }
+        logInfo("[POWER] Registered screen-power receiver", tag = "MAIN")
+    }
+
+    private fun unregisterScreenReceiver() {
+        try {
+            unregisterReceiver(screenReceiver)
+        } catch (_: IllegalArgumentException) {
+            // Already unregistered
+        }
+    }
+
+    /** Registers the display-power listener and seeds [lastDisplayInteractive] from the current state. */
+    private fun registerDisplayListener() {
+        val dm = getSystemService(Context.DISPLAY_SERVICE) as? DisplayManager ?: return
+        lastDisplayInteractive = (dm.getDisplay(Display.DEFAULT_DISPLAY)?.state == Display.STATE_ON)
+        // null handler → callbacks delivered on the main thread.
+        dm.registerDisplayListener(displayListener, null)
+        logInfo("[POWER] Registered display listener (interactive=$lastDisplayInteractive)", tag = "MAIN")
+    }
+
+    private fun unregisterDisplayListener() {
+        try {
+            (getSystemService(Context.DISPLAY_SERVICE) as? DisplayManager)?.unregisterDisplayListener(displayListener)
+        } catch (_: Exception) {
+            // Not registered
+        }
     }
 
     /**

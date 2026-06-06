@@ -9,6 +9,8 @@ local.properties
 
 # Signing keys (sensitive - never commit)
 **/key.properties
+keystore.properties
+**/keystore.properties
 *.jks
 *.keystore
 *.pem

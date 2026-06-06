@@ -445,6 +445,17 @@ object MessageSerializer {
                 // comes from /etc/airplay.conf (oemIconLabel), which the app writes separately.
                 put("autoConn", true) // Auto-connect when device detected
                 put("autoPlay", false) // Don't auto-play media on connection
+                // AutoResetUSB=0: stop the adapter from power-cycling its USB on disconnect.
+                // Default is 1 ("Power-cycle USB on disconnect", per
+                // RE_Documention/01_Firmware_Architecture/web_settings_reference.md). That
+                // power-cycle re-enumerates the device (a new /dev/bus/usb/001/NNN node), which
+                // the OS treats as a new device instance and re-prompts for USB permission each
+                // time. On vehicles whose USB port stays powered 24/7 (e.g. gminfo37) this drives
+                // the endless sequential re-enumeration + repeated permission prompts. Setting 0
+                // keeps the device instance stable across session drops. (The separate ~10s
+                // heartbeat watchdog is not controlled by this field.) Sent in the JSON sent-frame
+                // logged as [BOX_SETTINGS_JSON]; adapter ignores it if unsupported.
+                put("AutoResetUSB", 0)
                 // naviScreenInfo — adapter trigger for AltVideo (USB MsgType 0x2C).
                 // Firmware (configuration.md:765,974-1024 / video_protocol.md:684-687) parses
                 // this at address 0x16e5c; presence emits HU_NEEDNAVI_STREAM and starts 0x2C

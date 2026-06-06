@@ -41,7 +41,7 @@
          services have no host. -->
     <uses-feature
         android:name="android.hardware.type.automotive"
-        android:required="true" />
+        android:required="false" />
     <uses-feature
         android:name="android.hardware.location.gps"
         android:required="false" />
@@ -85,7 +85,10 @@
                 <category android:name="android.intent.category.APP_MUSIC" />
             </intent-filter>
 
-            <!-- USB Device Attachment -->
+            <!-- USB Device Attachment. This is the persistence anchor for the user's
+                 "Use by default for this USB device" choice — the receiver variant was tried
+                 (v156) and did NOT auto-grant on gminfo37, so we keep the Activity filter as
+                 the documented association point. -->
             <intent-filter>
                 <action android:name="android.hardware.usb.action.USB_DEVICE_ATTACHED" />
             </intent-filter>
@@ -107,7 +110,7 @@
             android:name="androidx.car.app.activity.CarAppActivity"
             android:exported="false"
             android:launchMode="singleTask"
-            android:taskAffinity="zeno.carlink.templates"
+            android:taskAffinity="${applicationId}.templates"
             android:excludeFromRecents="true"
             android:theme="@android:style/Theme.Translucent.NoTitleBar">
             <meta-data

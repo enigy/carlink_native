@@ -11,6 +11,8 @@ import android.hardware.usb.UsbEndpoint
 import android.hardware.usb.UsbInterface
 import android.hardware.usb.UsbManager
 import android.os.Build
+import android.os.Handler
+import android.os.Looper
 import androidx.core.content.ContextCompat
 import com.carlink.logging.Logger
 import com.carlink.logging.logDebug
@@ -24,6 +26,10 @@ import java.util.concurrent.atomic.AtomicLong
 import kotlin.coroutines.resume
 
 private const val ACTION_USB_PERMISSION = "com.carlink.USB_PERMISSION"
+// Grace window to keep the permission listener alive after a connection attempt is
+// cancelled (e.g. the adapter's reset watchdog detaches the device mid-dialog), so a
+// late "Allow" tap is still observed instead of dropped.
+private const val LATE_GRANT_GRACE_MS = 15_000L
 private const val MAX_PAYLOAD_SIZE = 2 * 1024 * 1024 // 2MB — reject corrupted headers
 // 15s chosen with headroom over the adapter's ~10s heartbeat window (see
 // documents/reference/heartbeat_analysis.md). If no data arrives at all inside this window
@@ -107,16 +113,23 @@ class UsbDeviceWrapper(
      * Request USB permission from the user.
      * This will show a system dialog asking the user to grant permission.
      *
-     * @param timeoutMs Timeout in milliseconds to wait for user response
+     * @param timeoutMs Timeout in milliseconds to wait for user response. 60s (was 30s): the
+     *   adapter now keeps the device instance alive during the wait (AutoResetUSB=0), so a
+     *   slower tap should resume THIS live attempt rather than time out and require a manual
+     *   Reset Device. A grant arriving after the timeout still triggers [onLatePermissionGrant].
      * @return true if permission was granted, false if denied or timeout
      */
-    suspend fun requestPermission(timeoutMs: Long = 30_000L): Boolean {
+    suspend fun requestPermission(timeoutMs: Long = 60_000L): Boolean {
         if (usbManager.hasPermission(device)) {
             log("Permission already granted for ${device.deviceName}")
             return true
         }
 
         log("Requesting USB permission for ${device.deviceName}...")
+
+        // Register on the APPLICATION context (not the Activity context) so the permission
+        // listener survives Activity teardown and the connection coroutine's cancellation.
+        val appContext = context.applicationContext
 
         return withTimeoutOrNull(timeoutMs) {
             suspendCancellableCoroutine { continuation ->
@@ -128,7 +141,7 @@ class UsbDeviceWrapper(
                         ) {
                             if (ACTION_USB_PERMISSION == intent.action) {
                                 try {
-                                    context.unregisterReceiver(this)
+                                    appContext.unregisterReceiver(this)
                                 } catch (_: IllegalArgumentException) {
                                     // Already unregistered
                                 }
@@ -138,10 +151,25 @@ class UsbDeviceWrapper(
                                         UsbManager.EXTRA_PERMISSION_GRANTED,
                                         false,
                                     )
-                                log("USB permission ${if (granted) "granted" else "denied"}")
+                                val late = !continuation.isActive
+                                log(
+                                    "USB permission ${if (granted) "granted" else "denied"}" +
+                                        if (late) " (late — connection attempt already ended)" else "",
+                                )
 
-                                if (continuation.isActive) {
+                                if (!late) {
                                     continuation.resume(granted)
+                                } else if (granted) {
+                                    // Late GRANT: the user tapped Allow after the connection
+                                    // attempt had already given up (e.g. they took longer than the
+                                    // dialog timeout). Permission is now held, so kick a fresh
+                                    // connection instead of leaving the app stuck (which previously
+                                    // required a manual Reset Device). See CarlinkManager wiring.
+                                    try {
+                                        onLatePermissionGrant?.invoke()
+                                    } catch (e: Exception) {
+                                        log("onLatePermissionGrant handler error: ${e.message}")
+                                    }
                                 }
                             }
                         }
@@ -150,7 +178,7 @@ class UsbDeviceWrapper(
                 // Register receiver using ContextCompat for API compatibility
                 // RECEIVER_NOT_EXPORTED ensures only this app can send permission broadcasts
                 ContextCompat.registerReceiver(
-                    context,
+                    appContext,
                     receiver,
                     IntentFilter(ACTION_USB_PERMISSION),
                     ContextCompat.RECEIVER_NOT_EXPORTED,
@@ -162,22 +190,36 @@ class UsbDeviceWrapper(
                 // mutable by default, so the flag is omitted there (it does not exist below API 31).
                 val mutableFlag =
                     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) PendingIntent.FLAG_MUTABLE else 0
+                // Use a device-specific request code so PendingIntents for different
+                // VID:PID pairs never collide. Packing VID into the high 16 bits and
+                // PID into the low 16 bits gives a unique int for every device pair
+                // in KnownDevices without risking wrap-around (both fields are 16-bit).
+                val requestCode = (vendorId shl 16) or productId
                 val pendingIntent =
                     PendingIntent.getBroadcast(
-                        context,
-                        0,
-                        Intent(ACTION_USB_PERMISSION).apply { setPackage(context.packageName) },
+                        appContext,
+                        requestCode,
+                        Intent(ACTION_USB_PERMISSION).apply { setPackage(appContext.packageName) },
                         mutableFlag or PendingIntent.FLAG_UPDATE_CURRENT,
                     )
                 usbManager.requestPermission(device, pendingIntent)
 
-                // Cleanup on cancellation
+                // Cleanup on cancellation — DO NOT discard a late grant.
+                // The adapter's ~7-8s reset watchdog frequently detaches the device mid-dialog,
+                // which cancels this connection attempt. But the user may tap "Allow" a moment
+                // later. Instead of tearing the listener down instantly (which dropped the tap
+                // and, with it, any "Use by default" persistence the system would record), keep
+                // it alive for a grace window so the grant is still observed. The receiver
+                // self-unregisters on receive; this delayed unregister is the safety net if no
+                // broadcast ever arrives.
                 continuation.invokeOnCancellation {
-                    try {
-                        context.unregisterReceiver(receiver)
-                    } catch (_: IllegalArgumentException) {
-                        // Already unregistered
-                    }
+                    Handler(Looper.getMainLooper()).postDelayed({
+                        try {
+                            appContext.unregisterReceiver(receiver)
+                        } catch (_: IllegalArgumentException) {
+                            // Already unregistered (grant arrived, or already cleaned up)
+                        }
+                    }, LATE_GRANT_GRACE_MS)
                 }
             }
         } ?: run {
@@ -208,6 +250,25 @@ class UsbDeviceWrapper(
         if (connection == null) {
             log("Failed to open device connection")
             return false
+        }
+
+        // DIAGNOSTIC: log the USB descriptor identity now that the device is open (permission
+        // is held). Android only PERSISTS the "always allow" USB grant for devices that expose
+        // a serial number; a null/blank serial means the grant is session-only and the user is
+        // re-prompted on every re-enumeration (cold boot) / process restart. `persistable`
+        // tells us whether remembering the permission is even possible for this adapter.
+        try {
+            val serial = device.serialNumber
+            log(
+                "[USB_IDENTITY] name=${device.deviceName} " +
+                    "VID=0x${vendorId.toString(16)} PID=0x${productId.toString(16)} " +
+                    "serial=${serial ?: "<null>"} " +
+                    "mfr=${device.manufacturerName ?: "<null>"} " +
+                    "product=${device.productName ?: "<null>"} " +
+                    "persistable=${!serial.isNullOrBlank()}",
+            )
+        } catch (e: SecurityException) {
+            log("[USB_IDENTITY] serial read denied (no permission): ${e.message}")
         }
 
         // Find and claim the bulk transfer interface
@@ -752,6 +813,16 @@ class UsbDeviceWrapper(
     }
 
     companion object {
+        /**
+         * Invoked when the user grants USB permission AFTER the requesting connection attempt
+         * has already ended (a "late" grant). Set once by [com.carlink.CarlinkManager] to kick a
+         * fresh connection so the app self-recovers instead of sitting idle until a manual Reset
+         * Device. Process-global (the permission receiver outlives the per-connection wrapper);
+         * the handler must be idempotent and re-check connection state itself.
+         */
+        @Volatile
+        var onLatePermissionGrant: (() -> Unit)? = null
+
         /**
          * Find all connected Carlinkit devices.
          */

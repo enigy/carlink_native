@@ -123,6 +123,27 @@ class CarlinkManager(
         // override pipeline. Validation pathway: PNGs written by ManeuverIconDebugDumper
         // continue regardless of this flag.
         com.carlink.navigation.compose.ComposedIconStore.setEnabled(true)
+
+        // Self-recover from a LATE USB-permission grant: if the user taps "Allow" after the
+        // connection attempt's dialog timed out, kick a fresh connect instead of leaving the
+        // app idle until a manual Reset Device.
+        UsbDeviceWrapper.onLatePermissionGrant = { onLatePermissionGranted() }
+    }
+
+    /**
+     * Handler for a USB-permission grant that arrived after the requesting attempt had ended.
+     * Permission is now held, so trigger a fresh connect — but only if we're actually idle and
+     * the head unit is on (don't disturb a live session or churn while the truck is off).
+     * Runs on the receiver's thread; hop to [scope] (main) for the state-machine work.
+     */
+    private fun onLatePermissionGranted() {
+        scope.launch {
+            if (state != State.DISCONNECTED) return@launch
+            if (suspendedForScreenOff || !isScreenInteractive()) return@launch
+            logInfo("[POWER] Late USB permission grant — kicking a fresh connect", tag = Logger.Tags.USB)
+            reconnectAttempts = 0
+            scheduleReconnect()
+        }
     }
 
     // Config can be updated when actual surface dimensions are known
@@ -421,6 +442,27 @@ class CarlinkManager(
     // Auto-reconnect on USB disconnect
     private var reconnectJob: Job? = null
     private var reconnectAttempts: Int = 0
+
+    // Screen-power suspend: when the head unit display is OFF (truck powered down, but the
+    // USB port stays powered 24/7 on some vehicles), the adapter free-runs and re-enumerates
+    // every few seconds with no phone session possible. Reconnecting/requesting USB permission
+    // in that state just churns and re-prompts. When true, scheduleReconnect() is a no-op; the
+    // app goes dormant until the display wakes (see onScreenOff / onScreenOn).
+    @Volatile private var suspendedForScreenOff = false
+
+    /**
+     * True when the head unit display is on/interactive. Used as a GATE in the reconnect
+     * path so the app can't churn (search → open → USB-permission prompt) while the truck is
+     * off — even if the screen-off broadcast/listener was missed. Fails OPEN (returns true)
+     * so a query failure never permanently blocks connecting. Reuses the existing
+     * [powerManager] declared with the wake lock below.
+     */
+    private fun isScreenInteractive(): Boolean =
+        try {
+            powerManager.isInteractive
+        } catch (e: Exception) {
+            true
+        }
 
     // Status escalation: detect degraded adapter states and give actionable user feedback.
     // - hadPriorSession: true if PLUGGED was received at least once since last stop().
@@ -2705,10 +2747,24 @@ class CarlinkManager(
                 albumCover != null ||
                 (duration > 0 && duration != previousDuration)
 
+        // Concatenate "Title - Artist" into the TITLE field. The GM cluster's media widget
+        // surfaces only the title line (it drops the separate artist field), so combining the
+        // two here is what makes the full "song - artist" string visible on the cluster.
+        // Falls back to whichever single value is present when one is missing.
+        val combinedTitle =
+            when {
+                !mediaInfo.songTitle.isNullOrEmpty() && !mediaInfo.songArtist.isNullOrEmpty() ->
+                    "${mediaInfo.songTitle} - ${mediaInfo.songArtist}"
+
+                else -> mediaInfo.songTitle ?: mediaInfo.songArtist
+            }
+
         if (metadataChanged) {
-            // Full metadata update (title/artist/album/cover/duration)
+            // Full metadata update (title/artist/album/cover/duration). title carries the
+            // combined "Title - Artist" string (see above); artist is still sent for
+            // consumers that render it separately (phone notification / Media Center).
             mediaSessionManager?.updateMetadata(
-                title = mediaInfo.songTitle,
+                title = combinedTitle,
                 artist = mediaInfo.songArtist,
                 album = mediaInfo.albumName,
                 appName = mediaInfo.appName,
@@ -2717,7 +2773,7 @@ class CarlinkManager(
             )
 
             // Update foreground notification with current now-playing
-            CarlinkMediaBrowserService.updateNowPlaying(mediaInfo.songTitle, mediaInfo.songArtist)
+            CarlinkMediaBrowserService.updateNowPlaying(combinedTitle, mediaInfo.songArtist)
         }
 
         // Always update playback state (position ticks are the common case)
@@ -2852,6 +2908,20 @@ class CarlinkManager(
         // Cancel any existing reconnect attempt
         reconnectJob?.cancel()
 
+        // Screen-power gate: while the head unit display is OFF (truck off), do NOT keep
+        // retrying/opening the adapter — that's what produced the endless reconnect + USB
+        // permission-prompt churn when the USB port stays powered 24/7. We check BOTH the
+        // broadcast/listener-driven flag AND isInteractive() directly, so a missed screen-off
+        // event still can't cause cycling. Stay dormant until the display wakes.
+        if (suspendedForScreenOff || !isScreenInteractive()) {
+            if (!suspendedForScreenOff) suspendedForScreenOff = true
+            logInfo("[POWER] Display off (isInteractive=false) — skipping reconnect; dormant until display wakes", tag = Logger.Tags.USB)
+            setStatusText("Waiting for head unit…")
+            cancelReconnect()
+            CarlinkMediaBrowserService.stopConnectionForeground(context)
+            return
+        }
+
         if (reconnectAttempts >= MAX_RECONNECT_ATTEMPTS) {
             logWarn(
                 "[RECONNECT] Max attempts ($MAX_RECONNECT_ATTEMPTS) reached, giving up. " +
@@ -2921,6 +2991,50 @@ class CarlinkManager(
         reconnectJob?.cancel()
         reconnectJob = null
         reconnectAttempts = 0
+    }
+
+    /**
+     * Head unit display turned OFF (truck powered down). Go dormant: cancel any pending
+     * reconnect and block new ones via [suspendedForScreenOff]. We deliberately do NOT tear
+     * down an already-active streaming session here — if this was a transient display-off
+     * while the truck is still running, the live session keeps working; if the truck is truly
+     * off, the adapter will detach on its own and we simply won't churn reconnect attempts.
+     *
+     * Called from MainActivity's ACTION_SCREEN_OFF receiver.
+     */
+    fun onScreenOff() {
+        if (suspendedForScreenOff) return
+        suspendedForScreenOff = true
+        logInfo(
+            "[POWER] Screen OFF — suspending adapter reconnect (head unit powered down). " +
+                "Will resume on screen ON.",
+            tag = Logger.Tags.USB,
+        )
+        cancelReconnect()
+        CarlinkMediaBrowserService.stopConnectionForeground(context)
+    }
+
+    /**
+     * Head unit display turned ON (truck powered up). Wake from dormancy and kick a single
+     * fresh connection attempt — the equivalent of an automatic "Reset Device", so the user
+     * shouldn't need the manual button after the truck comes back on.
+     *
+     * Called from MainActivity's ACTION_SCREEN_ON receiver.
+     */
+    fun onScreenOn() {
+        val wasSuspended = suspendedForScreenOff
+        suspendedForScreenOff = false
+        reconnectAttempts = 0
+        logInfo(
+            "[POWER] Screen ON — resuming. state=${state}, wasSuspended=$wasSuspended",
+            tag = Logger.Tags.USB,
+        )
+        // Only kick a fresh attempt if we're not already connected/connecting. start() is
+        // idempotent (it stops any existing session first), and the reconnect body re-checks
+        // state == DISCONNECTED, so this won't disturb a live session or double-start.
+        if (state == State.DISCONNECTED) {
+            scheduleReconnect()
+        }
     }
 
     private fun clearPairTimeout() {

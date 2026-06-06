@@ -1,8 +1,16 @@
+import java.util.Properties
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.plugin.compose")
     id("org.jlleitschuh.gradle.ktlint")
     id("io.gitlab.arturbosch.detekt")
+}
+
+// Load signing credentials from keystore.properties (never committed to VCS)
+val keystorePropertiesFile = rootProject.file("keystore.properties")
+val keystoreProperties = Properties().also { props ->
+    if (keystorePropertiesFile.exists()) keystorePropertiesFile.inputStream().use { props.load(it) }
 }
 
 android {
@@ -14,10 +22,10 @@ android {
 //###############################################
 
     defaultConfig {
-        applicationId = "zeno.carlink"
+        applicationId = "com.enigy.carlink"
         minSdk = 29
         targetSdk = 36
-        versionCode = 139
+        versionCode = 162
         versionName = "1.0.0"
 
 //###############################################
@@ -31,8 +39,20 @@ android {
         }
     }
 
+    signingConfigs {
+        create("release") {
+            if (keystorePropertiesFile.exists()) {
+                storeFile = file(keystoreProperties["storeFile"] as String)
+                storePassword = keystoreProperties["storePassword"] as String
+                keyAlias = keystoreProperties["keyAlias"] as String
+                keyPassword = keystoreProperties["keyPassword"] as String
+            }
+        }
+    }
+
     buildTypes {
         release {
+            signingConfig = signingConfigs.getByName("release")
             isMinifyEnabled = true
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
@@ -67,11 +87,11 @@ android {
         create("play") {
             dimension = "distribution"
             manifestPlaceholders["clusterIconAuthority"] =
-                "zeno.carlink.ClusterIconContentProvider"
+                "com.enigy.carlink.ClusterIconContentProvider"
             buildConfigField(
                 "String",
                 "CLUSTER_ICON_AUTHORITY",
-                "\"zeno.carlink.ClusterIconContentProvider\""
+                "\"com.enigy.carlink.ClusterIconContentProvider\""
             )
         }
     }

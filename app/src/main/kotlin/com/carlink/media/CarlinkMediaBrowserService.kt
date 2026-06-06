@@ -6,13 +6,18 @@ import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
+import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.content.pm.ServiceInfo
+import android.hardware.usb.UsbManager
+import android.os.Build
 import android.util.Log
 import androidx.annotation.VisibleForTesting
 import androidx.core.app.NotificationCompat
 import androidx.core.app.ServiceCompat
+import androidx.core.content.ContextCompat
 import androidx.media3.session.DefaultMediaNotificationProvider
 import androidx.media3.session.MediaLibraryService
 import androidx.media3.session.MediaLibraryService.MediaLibrarySession
@@ -21,6 +26,7 @@ import com.carlink.BuildConfig
 import com.carlink.MainActivity
 import com.carlink.R
 import com.carlink.logging.logInfo
+import com.carlink.usb.UsbDeviceWrapper
 import com.carlink.util.LogCallback
 
 private const val TAG = "CARLINK_BROWSER"
@@ -105,6 +111,20 @@ class CarlinkMediaBrowserService : MediaLibraryService() {
         createNotificationChannel()
         if (BuildConfig.DEBUG) Log.d(TAG, "[BROWSER_SERVICE] onCreate")
         MediaSessionManager.getOrCreate(applicationContext, serviceLogCallback).initialize()
+        // Probe USB permission at boot so the dialog never appears when the user opens the app.
+        // This service is auto-started by AAOS before MainActivity — running before the user
+        // taps the launcher icon. If the user previously tapped "Use by default" in the USB
+        // permission dialog, Android stores a persistent "always allow" preference keyed by
+        // (device VID:PID, package). UsbManager.requestPermission() checks that preference
+        // before deciding whether to show a dialog: if "always allow" is stored it silently
+        // grants and calls the PendingIntent with EXTRA_PERMISSION_GRANTED=true — no dialog,
+        // no user interaction. By the time the user opens MainActivity, hasPermission() is
+        // already true and the app connects immediately.
+        //
+        // First-time launch (no "always allow" stored yet): requestPermission() shows the
+        // system dialog here at boot. The user sees it once, taps "Use by default" + Allow,
+        // and never sees it again on any subsequent boot.
+        probeUsbPermissionsAtBoot()
     }
 
     /**
@@ -178,6 +198,83 @@ class CarlinkMediaBrowserService : MediaLibraryService() {
         instance = null
         stopForegroundMode()
         super.onDestroy()
+    }
+
+    // ──────────────────────────────────────────────────────────────────────
+    // USB permission boot probe
+    // ──────────────────────────────────────────────────────────────────────
+
+    /**
+     * Scan for connected Carlinkit devices and request USB permission for each one that
+     * doesn't already have it. Called from [onCreate] so this runs before the user opens
+     * MainActivity.
+     *
+     * Silent grant path (normal after first use): if the user previously tapped
+     * "Use by default" in the USB permission dialog, Android's UsbUserSettingsManager
+     * has a stored "always allow" preference for (device VID:PID, our package). When
+     * [UsbManager.requestPermission] is called with that preference in place, it grants
+     * silently — no dialog is shown, the [PendingIntent] fires immediately with
+     * EXTRA_PERMISSION_GRANTED=true.
+     *
+     * First-time path: no stored preference, so the system shows the dialog. The user
+     * taps "Use by default" + Allow once; all subsequent boot cycles are silent.
+     */
+    private fun probeUsbPermissionsAtBoot() {
+        val usbManager = getSystemService(Context.USB_SERVICE) as UsbManager
+        val devices = UsbDeviceWrapper.findDevices(usbManager)
+        if (devices.isEmpty()) {
+            if (BuildConfig.DEBUG) Log.d(TAG, "[BROWSER_SERVICE] No Carlinkit device found at boot probe")
+            return
+        }
+
+        val mutableFlag =
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) PendingIntent.FLAG_MUTABLE else 0
+
+        for (device in devices) {
+            if (usbManager.hasPermission(device)) {
+                if (BuildConfig.DEBUG) {
+                    Log.d(TAG, "[BROWSER_SERVICE] USB permission already held for " +
+                        "VID=0x${device.vendorId.toString(16)} PID=0x${device.productId.toString(16)}")
+                }
+                continue
+            }
+
+            // Use a device-specific request code so PendingIntents for different
+            // VID:PID combinations don't collide with each other.
+            val requestCode = (device.vendorId shl 16) or device.productId
+
+            val receiver = object : BroadcastReceiver() {
+                override fun onReceive(ctx: Context, intent: Intent) {
+                    if (intent.action != ACTION_USB_PERMISSION_PROBE) return
+                    try { applicationContext.unregisterReceiver(this) } catch (_: Exception) {}
+                    val granted = intent.getBooleanExtra(UsbManager.EXTRA_PERMISSION_GRANTED, false)
+                    Log.i(TAG, "[BROWSER_SERVICE] Boot USB probe result: " +
+                        "${if (granted) "GRANTED" else "DENIED"} " +
+                        "VID=0x${device.vendorId.toString(16)} " +
+                        "PID=0x${device.productId.toString(16)}")
+                }
+            }
+
+            ContextCompat.registerReceiver(
+                applicationContext,
+                receiver,
+                IntentFilter(ACTION_USB_PERMISSION_PROBE),
+                ContextCompat.RECEIVER_NOT_EXPORTED,
+            )
+
+            val pendingIntent = PendingIntent.getBroadcast(
+                applicationContext,
+                requestCode,
+                Intent(ACTION_USB_PERMISSION_PROBE).setPackage(packageName),
+                mutableFlag or PendingIntent.FLAG_UPDATE_CURRENT,
+            )
+
+            if (BuildConfig.DEBUG) {
+                Log.d(TAG, "[BROWSER_SERVICE] Probing USB permission for " +
+                    "VID=0x${device.vendorId.toString(16)} PID=0x${device.productId.toString(16)}")
+            }
+            usbManager.requestPermission(device, pendingIntent)
+        }
     }
 
     // ──────────────────────────────────────────────────────────────────────
@@ -299,6 +396,13 @@ class CarlinkMediaBrowserService : MediaLibraryService() {
         }
 
         private const val NOTIFICATION_CHANNEL_ID = "carlink_connection"
+
+        /**
+         * Broadcast action used by [probeUsbPermissionsAtBoot]. Kept separate from
+         * UsbDeviceWrapper's ACTION_USB_PERMISSION so the two permission paths don't
+         * share PendingIntents and accidentally cancel each other.
+         */
+        private const val ACTION_USB_PERMISSION_PROBE = "com.carlink.USB_PERMISSION_PROBE"
 
         /**
          * Foreground-service notification id. MUST equal Media3's

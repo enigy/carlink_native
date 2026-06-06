@@ -2,6 +2,9 @@ package com.carlink.ui
 
 import android.view.MotionEvent
 import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.EnterTransition
+import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.scaleIn
@@ -61,11 +64,13 @@ import com.carlink.logging.logInfo
 import com.carlink.protocol.MessageSerializer
 import com.carlink.protocol.MultiTouchAction
 import com.carlink.protocol.PhoneType
+import com.carlink.ui.components.AnimatedConnectingBackground
 import com.carlink.ui.components.LoadingSpinner
 import com.carlink.ui.components.VideoSurface
 import com.carlink.ui.components.rememberVideoSurfaceState
 import com.carlink.ui.settings.DisplayMode
 import com.carlink.ui.theme.AutomotiveDimens
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 /** Main projection screen displaying H.264 video via SurfaceView (HWC overlay) with touch forwarding. */
@@ -165,7 +170,19 @@ fun MainScreen(
         }
     }
 
-    val isLoading = connectionState != CarlinkManager.State.STREAMING
+    // Hold the loading overlay for 2.5 extra seconds after streaming begins so the
+    // video buffer has time to fill before the 1-second fade-out starts.
+    // Without the delay the first frame can be black or incomplete, making the
+    // transition look like a flash rather than a smooth dissolve into live video.
+    var isLoading by remember(carlinkManager) { mutableStateOf(true) }
+    LaunchedEffect(connectionState) {
+        if (connectionState == CarlinkManager.State.STREAMING) {
+            delay(2500L)
+            isLoading = false
+        } else {
+            isLoading = true
+        }
+    }
     val colorScheme = MaterialTheme.colorScheme
 
     val baseModifier = Modifier.fillMaxSize().background(Color.Black)
@@ -289,15 +306,24 @@ fun MainScreen(
             } // end key(carlinkManager, displayMode)
         }
 
-        // Loading overlay
-        if (isLoading) {
+        // Loading overlay — appears instantly, fades out over 1 s when streaming begins.
+        // AnimatedVisibility keeps the composable in the tree during the exit animation so
+        // the rings keep rendering while the video surface cross-fades through underneath.
+        AnimatedVisibility(
+            visible = isLoading,
+            enter = EnterTransition.None,                                  // instant appear
+            exit  = fadeOut(animationSpec = tween(durationMillis = 1000)), // 1 s fade-out
+            modifier = Modifier.fillMaxSize(),
+        ) {
+            // Inner Box provides BoxScope so the button Row can use .align(TopStart)
+            Box(modifier = Modifier.fillMaxSize()) {
             Box(
-                modifier =
-                    Modifier
-                        .fillMaxSize()
-                        .background(colorScheme.scrim.copy(alpha = 0.7f)),
+                modifier = Modifier.fillMaxSize(),
                 contentAlignment = Alignment.Center,
             ) {
+                // Animated background fills the overlay entirely
+                AnimatedConnectingBackground()
+
                 Column(
                     horizontalAlignment = Alignment.CenterHorizontally,
                     verticalArrangement = Arrangement.Center,
@@ -309,12 +335,6 @@ fun MainScreen(
                     )
 
                     Spacer(modifier = Modifier.height(24.dp))
-
-                    LoadingSpinner(
-                        color = colorScheme.primary,
-                    )
-
-                    Spacer(modifier = Modifier.height(16.dp))
 
                     Text(
                         text = "[ $statusText ]",
@@ -425,7 +445,8 @@ fun MainScreen(
                     )
                 }
             }
-        }
+            } // end inner Box (BoxScope for button Row)
+        } // end AnimatedVisibility
     }
 }
 
