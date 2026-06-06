@@ -15,7 +15,7 @@
 // END EXAMPLE
 //
 // Major changes or discoveries. The appropriate .MD in Project:/Documentation/ should be updated/corrected or created with more technical information.
-//
+//w
 
 [1] :: Initial Release
 [2] :: Permission Prompt not shown, fixed. Ktlint issues corrected. PUSHED:
@@ -617,8 +617,33 @@
    - Graphics ops were already off-main-thread; single worker = zero compose concurrency, all Path/Paint function-local. Builds clean, installed versionCode 139.
    - Affected: ComposedIconStore.kt (parse-inline + background worker + dedup + supersede), CarlinkManager.kt (call-site comment + log text).
 
+[140] :: Android Auto portrait + any-AR support — two-way aspect-fit fills every display at native AR, no crop or stretch.
+   - Root: AA tier table was landscape-only; portrait or narrow displays collapsed to a wrong 16:9 tier, cropping content.
+   - Ported AutoKit C0797c0.m6106c two-way fit (macOS client reference): rendered content AR always equals display AR.
+   - The non-binding tier edge shrinks; phone bakes black bars on that axis, host oversizes/clips to remove them.
+   - MessageSerializer.kt: orientation-aware tiers (portrait 480x800, 720x1280, 1080x1920) plus two-way emit binding the constrained edge.
+   - CarlinkManager.kt getAaCropParams now axis-aware: AaCropParams gains contentWidth/cropLeft for left/right bars on tall displays.
+   - MainScreen.kt oversizes width or height by crop axis; touch normalization adds a symmetric cropLeftX offset.
+   - Landscape and CarPlay unchanged: displayAR>=tierAR path identical; CarPlay still uses serializeOpen, untouched.
+   - Live AAOS emulator 1440x1920 portrait with phone: was tier=1280x720 aaSize=1280x720 crop=null (stretched).
+   - Now tier=1080x1920 aaSize=1080x1440 cropTop=240; surface oversized 1440x2560, clipped to fill display at correct AR.
+   - Horizontal-crop (cropLeft) path implemented but not yet hardware-validated; needs a portrait display taller than 9:16.
+   - Affected: MessageSerializer.kt, CarlinkManager.kt, MainScreen.kt.
+
+[141] :: Cluster maneuver mapping — WITH_ANGLE roundabouts, VCU platform-gate for dead bitmap work, firmware-verified CT5 cluster pipeline.
+   - ManeuverMapper roundabouts now use TYPE_ROUNDABOUT_ENTER_AND_EXIT_*_WITH_ANGLE + setRoundaboutExitAngle from iAP2 0x000b / AA NaviTurnAngle.
+   - iAP2 driver-relative exit angle converted to androidx swept-angle: CCW=(180-a)mod360, CW=(180+a)mod360, 0 maps to 360.
+   - PlatformDetector.isVcuCluster() detects VCU (device burmese / Build.ID prefix VCU); best-effort, untested, no VCUNH1 hardware.
+   - On VCU, ComposedIconStore bitmap compose and the AA cluster-icon shim are skipped; both are masked there anyway.
+   - Firmware-verified (4-agent OS-image sweep): CT5 cluster rendered by QNX HMIC (Altia GMModel), Android blind to pixels.
+   - Handoff is enum-only over inter-VM Automotive Ethernet (NFSA/FSA); no bitmap/URI consumer exists on the CT5 cluster path.
+   - CT5 Altia atlas lacks directional roundabout glyphs, so WITH_ANGLE has no visible CT5 effect; kept for gminfo37-neutral correctness.
+   - Non-roundabout maneuvers already render correct GM glyphs; rich-iAP2 cluster improvement is gminfo3.7-only.
+   - gminfo3.7 behavior unchanged; assembleSideloadDebug and ktlintCheck pass.
+   - Affected: ManeuverMapper.kt, NavigationStateManager.kt, TripBuilder.kt, PlatformDetector.kt, ComposedIconStore.kt, CarlinkManager.kt.
+
 [162] :: com.enigy.carlink fork — GM/Chevy gminfo37 customizations. First published fork release.
-   - versionCodes 140–161 were unpublished local iterations; this commit folds them into the fork's first published release.
+   - versionCodes 142–161 were unpublished local iterations; this commit folds them into the fork's first published release.
    - UI / loading: replaced loading visuals with an antialiased concentric-rings animation (AnimatedConnectingBackground), slowed to half speed.
    - Removed the spinning-semicircle overlay that drew over the rings; added a 1s fadeOut transition from loading to phone-mirror stream, with a 2.5s delay before it starts.
    - USB dormancy: app now sleeps when the head-unit screen is off — gated on PowerManager.isInteractive() plus a DisplayManager.DisplayListener watching STATE_OFF/STATE_ON; reconnect scheduling is suppressed while dormant (battery-drain fix, non-privileged signals only).
