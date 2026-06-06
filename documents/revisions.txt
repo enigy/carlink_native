@@ -616,3 +616,16 @@
    - Roundabout icons unchanged in correctness (same first-wins key); they benefit most as the heaviest renders move off the read thread.
    - Graphics ops were already off-main-thread; single worker = zero compose concurrency, all Path/Paint function-local. Builds clean, installed versionCode 139.
    - Affected: ComposedIconStore.kt (parse-inline + background worker + dedup + supersede), CarlinkManager.kt (call-site comment + log text).
+
+[162] :: com.enigy.carlink fork — GM/Chevy gminfo37 customizations. First published fork release.
+   - versionCodes 140–161 were unpublished local iterations; this commit folds them into the fork's first published release.
+   - UI / loading: replaced loading visuals with an antialiased concentric-rings animation (AnimatedConnectingBackground), slowed to half speed.
+   - Removed the spinning-semicircle overlay that drew over the rings; added a 1s fadeOut transition from loading to phone-mirror stream, with a 2.5s delay before it starts.
+   - USB dormancy: app now sleeps when the head-unit screen is off — gated on PowerManager.isInteractive() plus a DisplayManager.DisplayListener watching STATE_OFF/STATE_ON; reconnect scheduling is suppressed while dormant (battery-drain fix, non-privileged signals only).
+   - USB reconnect robustness: requestPermission timeout 30s→60s; late permission grant (user taps Allow after the attempt ended) now auto-retries via UsbDeviceWrapper.onLatePermissionGrant → CarlinkManager.onLatePermissionGranted, removing the manual Reset-Device requirement.
+   - AutoResetUSB:0 added to BoxSettings JSON — stops the adapter from power-cycling the USB on disconnect, which had caused unbounded /dev/bus/usb re-enumeration and repeated permission prompts.
+   - Navigation cluster: turn-direction text injected into the cue (ManeuverMapper.directionText + TripBuilder.composeCue), gated to within a configurable distance threshold (toggle + 500ft–2mi slider in AdapterConfigPreference); suppresses redundant "Arrive on the left/right".
+   - Media: cluster media title now concatenates "Title - Artist" with a " - " separator (Apple Music was dropping the artist line); the Spotify title-freeze was confirmed an upstream Spotify bug, not ours — no app-side change.
+   - Build/packaging: applicationId com.enigy.carlink; signing config loaded from gitignored keystore.properties; sideload (APK) flavor claims the GM ClusterIconContentProvider authority while play (AAB) flavor uses an applicationId-suffixed authority to pass Play Console (issue #6); keystore.properties added to .gitignore.
+   - Affected: AnimatedConnectingBackground.kt (new), MainScreen.kt, CarlinkManager.kt, MainActivity.kt, UsbDeviceWrapper.kt, MessageSerializer.kt, ManeuverMapper.kt, TripBuilder.kt, AdapterConfigPreference.kt, AdapterConfigurationDialog.kt, ComposedIconStore.kt, ClusterMainSession.kt, CarlinkMediaBrowserService.kt, AndroidManifest.xml, build.gradle.kts, .gitignore.
+   Pushed: 06JUN26 12:28AM
