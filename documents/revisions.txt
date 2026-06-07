@@ -642,6 +642,27 @@
    - gminfo3.7 behavior unchanged; assembleSideloadDebug and ktlintCheck pass.
    - Affected: ManeuverMapper.kt, NavigationStateManager.kt, TripBuilder.kt, PlatformDetector.kt, ComposedIconStore.kt, CarlinkManager.kt.
 
+[142] :: Video staging buffer fix — AA/CarPlay pixelation from oversized-frame drops.
+   - STAGED_FRAME_CAPACITY raised 512KB -> 2MB. Affected: H264Renderer.java.
+   - Root cause: staging slot (512KB) too small for legit 1080p map frames.
+   - Frames hit 690-887KB, rejected by the feedDirect oversized guard.
+   - That drop breaks the H.264 reference chain, so the picture corrupts.
+   - AA sends ~1 IDR per session, so a dropped frame stays pixelated.
+   - Recovery: a lucky natural IDR, or manual navigate-away/back (resumeVideo teardown + FRAME).
+   - Diagnosed via live emulator logcat: oversized-drop count correlated 1:1 with pixelation.
+   - oversized:6/1 -> pixelated; oversized:0 -> clean; self-cleared when a fitting natural IDR arrived.
+   - Fix covers AA 1080p (~1.5MB) and CarPlay up to 2400x960 (~1.7MB).
+   - KNOWN LIMIT: 2MB does NOT cover CarPlay 4K (~3-6MB frames).
+   - Frame size = resolution x content complexity; heavy 4K motion still exceeds 2MB.
+   - Complete fix (future): resolution-derived capacity from negotiated WxH at initCodec.
+   - Plus reactive keyframe on oversized drop, instead of waiting on luck.
+   - Envelope confirmed via AA APK 16.9.666314 decompile plus prior ADB trace.
+   - H.264-only (CPC200 adapter hard limit); AA capped at 1080p; CarPlay up to 4K.
+   - Gearhead VIDEO_1440x2560 / 3840x2160 enums are stubs; never drive the encoder.
+   - Tested AA 1080x1920 and CarPlay 3840x2160: 0 oversized, clean decode (Rx==Dec).
+   - NOT stress-validated: neither session crossed 512KB; peaks 318KB and 147KB.
+   - Emulator c2.goldfish software decoder kept up with 4K under light load.
+
 [162] :: com.enigy.carlink fork — GM/Chevy gminfo37 customizations. First published fork release.
    - versionCodes 142–161 were unpublished local iterations; this commit folds them into the fork's first published release.
    - UI / loading: replaced loading visuals with an antialiased concentric-rings animation (AnimatedConnectingBackground), slowed to half speed.
@@ -654,3 +675,16 @@
    - Build/packaging: applicationId com.enigy.carlink; signing config loaded from gitignored keystore.properties; sideload (APK) flavor claims the GM ClusterIconContentProvider authority while play (AAB) flavor uses an applicationId-suffixed authority to pass Play Console (issue #6); keystore.properties added to .gitignore.
    - Affected: AnimatedConnectingBackground.kt (new), MainScreen.kt, CarlinkManager.kt, MainActivity.kt, UsbDeviceWrapper.kt, MessageSerializer.kt, ManeuverMapper.kt, TripBuilder.kt, AdapterConfigPreference.kt, AdapterConfigurationDialog.kt, ComposedIconStore.kt, ClusterMainSession.kt, CarlinkMediaBrowserService.kt, AndroidManifest.xml, build.gradle.kts, .gitignore.
    Pushed: 06JUN26 12:28AM
+
+[164] :: USB connect robustness — survive surface-churn cancellation + late-grant recovery.
+   - Initial connect moved off the surface-keyed LaunchedEffect onto the CarlinkManager scope (connect()).
+   - Root cause: cluster CarAppActivity resizes the SurfaceView at startup (2400->1605->2400),
+     changing the effect key and cancelling the in-flight USB requestPermission() mid-flight.
+   - Symptom: grant lands "late" (~5s, not the 60s timeout), state stranded at CONNECTING,
+     app sat at "Adapter found, opening..." until a manual Reset Device (v163 log 2026-06-07).
+   - connect() runs start() on Dispatchers.IO on the manager scope (cancelled only at release).
+   - onLatePermissionGranted now recovers whenever there is no live driver (stranded CONNECTING
+     or DISCONNECTED): force-reset state to DISCONNECTED, then scheduleReconnect().
+   - MainScreen + MainActivity onNewIntent call connect() instead of the cancellable suspending start().
+   - Also folds upstream [140] AA portrait, [141] WITH_ANGLE roundabouts + VCU gate, [142] 2MB staging buffer.
+   - Affected: CarlinkManager.kt, MainScreen.kt, MainActivity.kt.
