@@ -688,3 +688,18 @@
    - MainScreen + MainActivity onNewIntent call connect() instead of the cancellable suspending start().
    - Also folds upstream [140] AA portrait, [141] WITH_ANGLE roundabouts + VCU gate, [142] 2MB staging buffer.
    - Affected: CarlinkManager.kt, MainScreen.kt, MainActivity.kt.
+
+[166] :: USB reconnect holding pattern — no more permanent give-up / forced Reset Device.
+   - scheduleReconnect() no longer dead-ends after MAX_RECONNECT_ATTEMPTS; it keeps retrying at
+     the 30s cap (screen-gated) so the app self-heals when the user taps the USB permission dialog
+     or the adapter/phone recovers.
+   - Root cause (v164 log 2026-06-07): a phone unplug made the adapter re-pair with the absent
+     phone, go silent 60s, then re-enumerate /010->/011. The new device path needs a fresh USB
+     permission grant; 5 attempts timed out (user not looking), the app gave up, and sat stranded
+     14 min with NO dialog showing until a manual Reset Device.
+   - Holding pattern clamps reconnectAttempts at MAX (delay pinned at 30s cap, no overflow, no
+     cadence escalation); status shows "… — retrying…". consecutiveNoResponse/shortSessions are
+     preserved for escalation context. reconnectAttempts resets to 0 on successful PLUGGED.
+   - The existing screen-off dormancy gate still halts all retries when the truck is off (battery);
+     onScreenOn() re-kicks. So the dialog only re-appears while the head unit is on.
+   - Affected: CarlinkManager.kt.

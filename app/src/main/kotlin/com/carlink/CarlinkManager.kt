@@ -3010,28 +3010,34 @@ class CarlinkManager(
             return
         }
 
-        if (reconnectAttempts >= MAX_RECONNECT_ATTEMPTS) {
-            logWarn(
-                "[RECONNECT] Max attempts ($MAX_RECONNECT_ATTEMPTS) reached, giving up. " +
-                    "noResponse=$consecutiveNoResponse shortSessions=$shortLivedStreamingCount hadPrior=$hadPriorSession",
+        // HOLDING PATTERN instead of permanent give-up. After the fast backoff attempts we do
+        // NOT stop — we keep retrying at the 30s cap so the app self-heals when the user taps the
+        // USB permission dialog or the adapter/phone recovers, instead of dead-ending and forcing a
+        // manual Reset Device. Observed v164 (2026-06-07): a phone unplug made the adapter go
+        // silent and re-enumerate /010->/011; the new device path needs a fresh permission grant,
+        // 5 attempts timed out (user not looking), the app gave up, and sat stranded 14 min with NO
+        // dialog showing until Reset Device. In the holding pattern the dialog stays available so a
+        // single tap recovers it. The screen-off gate above halts this entirely when the truck is
+        // off (battery-safe), and onScreenOn() re-kicks it.
+        val holdingPattern = reconnectAttempts >= MAX_RECONNECT_ATTEMPTS
+        if (holdingPattern) {
+            // Clamp so the backoff delay stays pinned at the 30s cap (and `1L shl` can never
+            // overflow) and the cadence doesn't escalate. consecutiveNoResponse /
+            // shortLivedStreamingCount are intentionally NOT reset so escalation context survives.
+            reconnectAttempts = MAX_RECONNECT_ATTEMPTS
+            val holdMessage = when {
+                consecutiveNoResponse >= 2 -> "Adapter not responding — retrying…"
+                shortLivedStreamingCount >= SHORT_SESSION_ESCALATION_COUNT -> "Connection unstable — retrying…"
+                hadPriorSession -> "Phone not reconnecting — retrying…"
+                else -> "Waiting for adapter — retrying…"
+            }
+            logInfo(
+                "[RECONNECT] Holding pattern — slow retry at ${MAX_RECONNECT_DELAY_MS}ms cap " +
+                    "(noResponse=$consecutiveNoResponse shortSessions=$shortLivedStreamingCount " +
+                    "hadPrior=$hadPriorSession). \"$holdMessage\"",
                 tag = Logger.Tags.USB,
             )
-            val giveUpMessage = when {
-                consecutiveNoResponse >= 2 -> "Adapter not responding — reboot adapter"
-                shortLivedStreamingCount >= SHORT_SESSION_ESCALATION_COUNT -> "Connection unstable — reboot adapter"
-                hadPriorSession -> "Phone not reconnecting — reboot adapter"
-                else -> "Adapter not responding — unplug and replug adapter"
-            }
-            // After give-up: reconnectAttempts is reset to 0, but shortLivedStreamingCount
-            // / consecutiveNoResponse are NOT reset. A user who manually taps reconnect
-            // after give-up will immediately trip Pattern A/C escalation on the first
-            // failure. Intentional so the escalation context survives the "give up" → "user
-            // retries" boundary; but the UX can surprise.
-            reconnectAttempts = 0
-            setStatusText(giveUpMessage)
-            // Stop FGS since we're no longer attempting to reconnect
-            CarlinkMediaBrowserService.stopConnectionForeground(context)
-            return
+            setStatusText(holdMessage)
         }
 
         // Maintain foreground priority during reconnect delay to prevent LMK kill
@@ -3043,14 +3049,15 @@ class CarlinkManager(
                 INITIAL_RECONNECT_DELAY_MS * (1L shl reconnectAttempts),
                 MAX_RECONNECT_DELAY_MS,
             )
-        reconnectAttempts++
 
-        logInfo(
-            "[RECONNECT] Scheduling attempt $reconnectAttempts/$MAX_RECONNECT_ATTEMPTS in ${delay}ms",
-            tag = Logger.Tags.USB,
-        )
-
-        setStatusText("Reconnecting ($reconnectAttempts/$MAX_RECONNECT_ATTEMPTS)...")
+        if (!holdingPattern) {
+            reconnectAttempts++
+            logInfo(
+                "[RECONNECT] Scheduling attempt $reconnectAttempts/$MAX_RECONNECT_ATTEMPTS in ${delay}ms",
+                tag = Logger.Tags.USB,
+            )
+            setStatusText("Reconnecting ($reconnectAttempts/$MAX_RECONNECT_ATTEMPTS)...")
+        }
 
         reconnectJob =
             scope.launch {
