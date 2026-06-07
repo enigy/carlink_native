@@ -388,15 +388,13 @@ class MainActivity : ComponentActivity() {
                 launchCarAppActivity()
             }
 
-            // Auto-connect when adapter re-enumerates (e.g., after reboot or replug)
+            // Auto-connect when adapter re-enumerates (e.g., after reboot or replug).
+            // connect() runs on the manager's own scope (immune to UI/surface churn) and
+            // self-chains the reconnect loop on failure.
             val manager = carlinkManager
             if (manager != null && manager.state == CarlinkManager.State.DISCONNECTED) {
                 logInfo("[LIFECYCLE] Manager disconnected — auto-starting connection", tag = "MAIN")
-                CoroutineScope(Dispatchers.IO).launch {
-                    manager.start()
-                    // Chain reconnect if start() failed (permission timeout, device not found)
-                    manager.requestReconnect()
-                }
+                manager.connect()
             }
         }
     }

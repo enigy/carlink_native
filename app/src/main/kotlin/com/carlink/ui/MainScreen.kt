@@ -167,11 +167,12 @@ fun MainScreen(
             )
             if (!hasStartedConnection) {
                 hasStartedConnection = true
-                carlinkManager.start()
-                // If the initial connect failed (permission timeout, device not
-                // found), kick the reconnect loop so attempts 2-5 fire automatically
-                // instead of leaving the app stuck on "USB permission denied".
-                carlinkManager.requestReconnect()
+                // Launch on the MANAGER's scope, NOT this LaunchedEffect's coroutine. This effect
+                // is keyed on surface/containerSize, which the cluster CarAppActivity churns at
+                // startup; running the suspending start() here would let that churn cancel the USB
+                // permission request mid-flight and strand the app at "Adapter found, opening…"
+                // (v163 bug). connect() survives surface churn and self-chains the reconnect loop.
+                carlinkManager.connect()
             }
         }
     }

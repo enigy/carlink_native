@@ -53,6 +53,7 @@ import com.carlink.usb.UsbDeviceWrapper
 import com.carlink.util.AppExecutors
 import com.carlink.util.LogCallback
 import com.carlink.video.H264Renderer
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -150,9 +151,19 @@ class CarlinkManager(
      */
     private fun onLatePermissionGranted() {
         scope.launch {
-            if (state != State.DISCONNECTED) return@launch
+            // Don't disturb a session that actually owns the device. adapterDriver != null means
+            // we're live (STREAMING/DEVICE_CONNECTED) or genuinely mid-handshake — leave it alone.
+            // adapterDriver == null means we're either DISCONNECTED or STRANDED at CONNECTING (a
+            // start() whose permission request was cancelled before it opened the device — see
+            // [connect]); either way a fresh attempt is the right move.
+            if (adapterDriver != null) return@launch
             if (suspendedForScreenOff || !isScreenInteractive()) return@launch
-            logInfo("[POWER] Late USB permission grant — kicking a fresh connect", tag = Logger.Tags.USB)
+            logInfo(
+                "[USB] Late permission grant — restarting connect (state=$state, no live driver)",
+                tag = Logger.Tags.USB,
+            )
+            // Clear a stranded CONNECTING so scheduleReconnect()'s state==DISCONNECTED gate passes.
+            if (state != State.DISCONNECTED) setState(State.DISCONNECTED)
             reconnectAttempts = 0
             scheduleReconnect()
         }
@@ -1214,6 +1225,36 @@ class CarlinkManager(
         withContext(Dispatchers.IO) { start() }
         // Chain reconnect if start() failed (permission timeout, device not found)
         requestReconnect()
+    }
+
+    /**
+     * Kick off the initial connection on the MANAGER's own [scope] (not the caller's).
+     *
+     * CRITICAL: the initial connect must NOT run inside a Compose `LaunchedEffect` keyed on
+     * surface/containerSize. When the cluster CarAppActivity binds at startup it briefly resizes
+     * the SurfaceView (2400→1605→2400), which changes the effect key and cancels the effect's
+     * coroutine — cancelling the suspending `requestPermission()` mid-flight. The grant then lands
+     * "late", the state machine is stranded at CONNECTING, and the app sits at "Adapter found,
+     * opening…" until a manual Reset Device (observed v163, 2026-06-07 log). Launching on [scope]
+     * (alive for the manager's whole lifetime, cancelled only at [release]) makes the permission
+     * request survive surface churn so it can wait the full timeout for the user to tap Allow.
+     *
+     * Uses Dispatchers.IO for start() — it does blocking USB I/O (bulkTransfer, Thread.sleep,
+     * thread joins) that must never run on the main thread. Fire-and-forget; safe to call once.
+     */
+    fun connect() {
+        scope.launch {
+            try {
+                withContext(Dispatchers.IO) { start() }
+            } catch (e: CancellationException) {
+                throw e // manager teardown — let it propagate
+            } catch (e: Exception) {
+                logError("[CONNECT] start() failed: ${e.message}", tag = Logger.Tags.USB)
+            }
+            // Chain the reconnect loop if start() left us disconnected (permission timeout,
+            // device not found) so attempts 2-5 fire automatically instead of stranding.
+            requestReconnect()
+        }
     }
 
     /**
