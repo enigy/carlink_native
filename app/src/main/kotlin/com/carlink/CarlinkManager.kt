@@ -176,6 +176,12 @@ class CarlinkManager(
         private const val USB_WAIT_PERIOD_MS = 3000L
         private const val PAIR_TIMEOUT_MS = 15000L
 
+        // Grace window after a spontaneous phone unplug before we re-initiate the
+        // connection. Lets the adapter's autoConn re-pair a transiently-dropped phone
+        // (Plugged arrives → resume, no churn) instead of immediately tearing down and
+        // re-scanning, which wedges the adapter and forces a USB re-enumeration.
+        private const val UNPLUG_GRACE_MS = 10000L
+
         // Auto-reconnect constants
         private const val MAX_RECONNECT_ATTEMPTS = 5
         private const val INITIAL_RECONNECT_DELAY_MS = 2000L // Start with 2 seconds
@@ -458,6 +464,11 @@ class CarlinkManager(
     // Timers
     private var pairTimeout: Timer? = null
     private var frameIntervalJob: Job? = null
+
+    // Grace timer armed on a spontaneous phone unplug; fires a re-initiate only if the
+    // adapter's autoConn didn't bring the phone back within UNPLUG_GRACE_MS. Cancelled the
+    // moment a fresh Plugged arrives, or on any stop()/handleError()/start().
+    private var unplugGraceJob: Job? = null
 
     // Phone type tracking for keyframe request decisions
     /** Current phone type (CarPlay, Android Auto, etc.) from the PLUGGED message. Null when no phone connected. */
@@ -1083,6 +1094,7 @@ class CarlinkManager(
     fun stop(reboot: Boolean = false) {
         logDebug("[LIFECYCLE] stop() called - clearing keyframe schedule and phoneType", tag = Logger.Tags.VIDEO)
         clearPairTimeout()
+        cancelUnplugGrace() // Tearing down — drop any pending post-unplug re-initiate
         cancelDelayedKeyframe()
         cancelReconnect() // Cancel any pending auto-reconnect
         negotiationRejected = false // Clear rejection flag for fresh connection
@@ -1225,6 +1237,59 @@ class CarlinkManager(
         withContext(Dispatchers.IO) { start() }
         // Chain reconnect if start() failed (permission timeout, device not found)
         requestReconnect()
+    }
+
+    /**
+     * Gentle handler for a spontaneous phone unplug (no pending device switch).
+     *
+     * Keeps the adapter USB session OPEN and idle instead of tearing it down and re-scanning.
+     * Re-scanning for an absent phone is what wedges the adapter into its watchdog reboot →
+     * USB re-enumeration → lost permission grant. The heartbeat keeps flowing (we never call
+     * stop()), so the host-no-response watchdog stays satisfied; the read loop keeps running, so
+     * a returning phone's Plugged is processed normally and resumes the session with no churn.
+     *
+     * A grace timer is the only safety net: if autoConn doesn't bring the phone back within
+     * [UNPLUG_GRACE_MS], we fall back to a single restart() to re-initiate from scratch. The
+     * timer is cancelled the moment a fresh Plugged arrives ([cancelUnplugGrace], called from the
+     * Plugged handler), and on any stop()/handleError()/start().
+     */
+    private fun onPhoneUnpluggedGently() {
+        logInfo(
+            "[PHASE] Phone unplugged — holding adapter session idle for ${UNPLUG_GRACE_MS}ms " +
+                "(autoConn re-pair preferred over teardown+rescan)",
+            tag = Logger.Tags.ADAPTR,
+        )
+        setStatusText("Phone disconnected — waiting…")
+        // Surface the loading UI over the (now-stale) last frame; flush the decoder so a
+        // returning phone's keyframe renders clean. reset() keeps the USB session intact.
+        NavigationStateManager.clear()
+        h264Renderer?.reset()
+        setState(State.CONNECTING)
+
+        unplugGraceJob?.cancel()
+        unplugGraceJob =
+            scope.launch {
+                delay(UNPLUG_GRACE_MS)
+                // Only re-initiate if the phone never came back (still idle on a live session).
+                // A returning Plugged moves us to DEVICE_CONNECTED/STREAMING and cancels this job;
+                // a USB error moves us to DISCONNECTED and hands off to the reconnect path.
+                if (state == State.CONNECTING && adapterDriver != null) {
+                    logInfo(
+                        "[PHASE] No phone after ${UNPLUG_GRACE_MS}ms grace — re-initiating connection",
+                        tag = Logger.Tags.ADAPTR,
+                    )
+                    // Detach the field first so restart()→stop()→cancelUnplugGrace() can't cancel
+                    // THIS coroutine mid-restart (which would run stop() but skip start()).
+                    unplugGraceJob = null
+                    restart()
+                }
+            }
+    }
+
+    /** Cancel the post-unplug grace timer (phone returned, or session torn down). */
+    private fun cancelUnplugGrace() {
+        unplugGraceJob?.cancel()
+        unplugGraceJob = null
     }
 
     /**
@@ -1845,6 +1910,7 @@ class CarlinkManager(
                     )
                 }
                 clearPairTimeout()
+                cancelUnplugGrace() // Phone returned — cancel any pending post-unplug re-initiate
                 cancelDelayedKeyframe() // Stop any existing timer (clean slate)
 
                 // Reset reconnect attempts and escalation on successful connection
@@ -1963,15 +2029,34 @@ class CarlinkManager(
             }
 
             is UnpluggedMessage -> {
-                if (negotiationRejected) {
-                    logDebug(
-                        "[PHASE] Unplugged after negotiation rejection — not restarting",
-                        tag = Logger.Tags.ADAPTR,
-                    )
-                } else {
-                    setStatusText("Phone unplugged")
-                    scope.launch {
-                        restart()
+                when {
+                    negotiationRejected -> {
+                        logDebug(
+                            "[PHASE] Unplugged after negotiation rejection — not restarting",
+                            tag = Logger.Tags.ADAPTR,
+                        )
+                    }
+                    pendingConnectTarget != null -> {
+                        // User-initiated device switch: connectToDevice() set a target and
+                        // disconnected the current phone. Restart NOW so start() picks up the
+                        // pending target and connects to the chosen device immediately.
+                        logInfo(
+                            "[PHASE] Unplugged with pending target — restarting for device switch",
+                            tag = Logger.Tags.ADAPTR,
+                        )
+                        setStatusText("Switching device…")
+                        scope.launch { restart() }
+                    }
+                    else -> {
+                        // Spontaneous phone removal (CarPlay ended / phone left or briefly dropped).
+                        // Do NOT immediately tear down and re-scan — re-driving a scan/pair for an
+                        // absent phone wedges the adapter, which then trips its watchdog and reboots,
+                        // re-enumerating the USB device (/010→/011) and losing the USB permission
+                        // grant (see the 2026-06-07 analysis). Instead, hold the adapter session open
+                        // and idle and give autoConn a grace window to re-pair: a returning phone
+                        // arrives as a fresh Plugged and resumes with zero churn. Only if the phone
+                        // stays gone past the grace window do we fall back to a single restart().
+                        onPhoneUnpluggedGently()
                     }
                 }
             }
@@ -2897,6 +2982,7 @@ class CarlinkManager(
         // Pattern A/B/C status messages can correctly distinguish "adapter broken after a
         // prior session" from "never connected".
         clearPairTimeout()
+        cancelUnplugGrace() // Error supersedes the gentle post-unplug wait
 
         logError("Adapter error: $error", tag = Logger.Tags.ADAPTR)
 

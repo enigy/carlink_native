@@ -703,3 +703,18 @@
    - The existing screen-off dormancy gate still halts all retries when the truck is off (battery);
      onScreenOn() re-kicks. So the dialog only re-appears while the head unit is on.
    - Affected: CarlinkManager.kt.
+
+[167] :: Gentle Unplugged handling — attack the re-enumeration at its cause.
+   - Spontaneous phone unplug (no pending device switch) no longer immediately restart()s.
+   - Root cause: restart() tears down the USB session and re-scans/pairs for the just-removed
+     phone; that scan wedges the adapter, trips its watchdog, reboots it, and re-enumerates the
+     USB device (/010->/011) — losing the non-persistable permission grant and prompting again.
+   - New onPhoneUnpluggedGently(): keep the adapter session OPEN and idle (heartbeat keeps the
+     host-no-response watchdog happy, read loop stays up), flush the decoder, show the loading UI,
+     and give autoConn a 10s grace to re-pair. A returning phone arrives as a fresh Plugged and
+     resumes with zero churn; only if it stays gone past the grace do we fall back to one restart().
+   - pendingConnectTarget != null still restarts immediately (user-initiated device switch).
+   - Grace timer cancelled on Plugged / stop() / handleError(); self-detaches before its own
+     restart() so stop()->cancelUnplugGrace() can't abort the re-initiate mid-flight.
+   - Pairs with [166]: fewer re-enumerations at the source; holding pattern still covers any that
+     do occur. Affected: CarlinkManager.kt.
