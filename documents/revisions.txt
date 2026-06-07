@@ -676,7 +676,7 @@
    - Affected: AnimatedConnectingBackground.kt (new), MainScreen.kt, CarlinkManager.kt, MainActivity.kt, UsbDeviceWrapper.kt, MessageSerializer.kt, ManeuverMapper.kt, TripBuilder.kt, AdapterConfigPreference.kt, AdapterConfigurationDialog.kt, ComposedIconStore.kt, ClusterMainSession.kt, CarlinkMediaBrowserService.kt, AndroidManifest.xml, build.gradle.kts, .gitignore.
    Pushed: 06JUN26 12:28AM
 
-[164] :: USB connect robustness — survive surface-churn cancellation + late-grant recovery.
+[165] :: USB connect robustness — survive surface-churn cancellation + late-grant recovery.
    - Initial connect moved off the surface-keyed LaunchedEffect onto the CarlinkManager scope (connect()).
    - Root cause: cluster CarAppActivity resizes the SurfaceView at startup (2400->1605->2400),
      changing the effect key and cancelling the in-flight USB requestPermission() mid-flight.
