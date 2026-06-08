@@ -958,6 +958,15 @@ class CarlinkManager(
             tag = Logger.Tags.VIDEO,
         )
 
+        // If the USB permission isn't already held, the system shows a dialog and
+        // openWithPermission() blocks until the user responds (or the timeout). Tell the user
+        // EXACTLY what to do so they tap "Allow" instead of assuming it's stuck and hitting
+        // Reset Device — which tears this attempt down, cancels the in-flight permission request,
+        // and forces a recovery (observed 2026-06-07: a premature Reset 7s into launch).
+        if (!device.hasPermission()) {
+            setStatusText("Allow USB access — tap “Allow” on the dialog")
+        }
+
         if (!device.openWithPermission()) {
             logError("Failed to open USB device", tag = Logger.Tags.USB)
             setState(State.DISCONNECTED)

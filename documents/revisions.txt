@@ -731,6 +731,17 @@
      goes dormant instead of restart()ing. Grace job self-detaches before stop()/restart().
    - Screen-ON behavior unchanged: transient drops still get the 10s autoConn grace + one restart.
    - Affected: CarlinkManager.kt.
-   - NOTE/finding: a spurious DISPLAY_REINIT (displayModeChanged=false) fires ~7-30s after launch
-     every session, forcing a teardown+reconnect right after the initial connect (and re-triggering
-     the late-permission path). Not yet root-caused; recovers via the v164 late-grant handler.
+   - NOTE: the early DISPLAY_REINIT seen in these logs is NOT spurious/automatic (corrected in
+     [169]) — it is user-initiated: settings-apply (Tier 2) or a Reset Device tap.
+
+[169] :: Permission-wait UX — stop provoking premature Reset Device taps.
+   - Root-caused the "early DISPLAY_REINIT": there is NO automatic caller of
+     reinitializeForDisplayMode(). All three are user actions — Reset Device button
+     (displayModeChanged=false, no settings logs), adapter-config apply (Tier 2 + AdapterConfig
+     logs), display-mode apply. The 2026-06-07 19:48 log was a Reset Device tap ~7s into launch
+     while the app sat on the USB permission dialog; it cancelled the in-flight request and forced
+     the v164 late-grant recovery.
+   - Fix: while openWithPermission() is blocked on the system dialog (permission not already held),
+     status now reads 'Allow USB access — tap "Allow" on the dialog' instead of the vague
+     "Adapter found — opening…", so the user taps Allow rather than Reset Device.
+   - Affected: CarlinkManager.kt.
