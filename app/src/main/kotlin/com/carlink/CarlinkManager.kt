@@ -1242,18 +1242,38 @@ class CarlinkManager(
     /**
      * Gentle handler for a spontaneous phone unplug (no pending device switch).
      *
-     * Keeps the adapter USB session OPEN and idle instead of tearing it down and re-scanning.
-     * Re-scanning for an absent phone is what wedges the adapter into its watchdog reboot →
-     * USB re-enumeration → lost permission grant. The heartbeat keeps flowing (we never call
-     * stop()), so the host-no-response watchdog stays satisfied; the read loop keeps running, so
-     * a returning phone's Plugged is processed normally and resumes the session with no churn.
+     * When the head unit is ON: keeps the adapter USB session OPEN and idle instead of tearing it
+     * down and re-scanning. Re-scanning for an absent phone is what wedges the adapter into its
+     * watchdog reboot → USB re-enumeration → lost permission grant. The heartbeat keeps flowing
+     * (no stop()), so the host-no-response watchdog stays satisfied; the read loop keeps running, so
+     * a returning phone's Plugged is processed normally and resumes the session with no churn. A
+     * grace timer is the only safety net: if autoConn doesn't bring the phone back within
+     * [UNPLUG_GRACE_MS], we fall back to a single restart(). The timer is cancelled the moment a
+     * fresh Plugged arrives ([cancelUnplugGrace], from the Plugged handler), and on stop()/
+     * handleError()/start().
      *
-     * A grace timer is the only safety net: if autoConn doesn't bring the phone back within
-     * [UNPLUG_GRACE_MS], we fall back to a single restart() to re-initiate from scratch. The
-     * timer is cancelled the moment a fresh Plugged arrives ([cancelUnplugGrace], called from the
-     * Plugged handler), and on any stop()/handleError()/start().
+     * When the head unit is OFF (truck shutting down): the gentle hold/grace/re-initiate is skipped
+     * entirely — we stop() and go dormant. Otherwise the grace-restart would churn a reconnect and
+     * re-acquire the USB streaming wake lock while the truck is off. onScreenOn() reconnects later.
      */
     private fun onPhoneUnpluggedGently() {
+        // DORMANCY GATE: if the head unit is OFF, do NOT hold/grace/re-initiate. The truck-shutdown
+        // sequence is exactly screen-off → WIFI_DISCONNECTED → Unplugged (~60s later), so the phone
+        // is gone because the truck is off. Re-initiating here churns a full reconnect and re-grabs
+        // the USB streaming wake lock while the truck is off — observed v167: wake lock held ~15 min
+        // during screen-off. Go dormant instead; onScreenOn() reconnects when the truck returns.
+        if (suspendedForScreenOff || !isScreenInteractive()) {
+            logInfo(
+                "[PHASE] Phone unplugged while display off — going dormant (no re-initiate)",
+                tag = Logger.Tags.ADAPTR,
+            )
+            if (!suspendedForScreenOff) suspendedForScreenOff = true
+            cancelUnplugGrace()
+            NavigationStateManager.clear()
+            scope.launch { withContext(Dispatchers.IO) { stop() } }
+            return
+        }
+
         logInfo(
             "[PHASE] Phone unplugged — holding adapter session idle for ${UNPLUG_GRACE_MS}ms " +
                 "(autoConn re-pair preferred over teardown+rescan)",
@@ -1270,18 +1290,28 @@ class CarlinkManager(
         unplugGraceJob =
             scope.launch {
                 delay(UNPLUG_GRACE_MS)
-                // Only re-initiate if the phone never came back (still idle on a live session).
-                // A returning Plugged moves us to DEVICE_CONNECTED/STREAMING and cancels this job;
-                // a USB error moves us to DISCONNECTED and hands off to the reconnect path.
+                // Detach the field first so a nested stop()/restart()→cancelUnplugGrace() can't
+                // cancel THIS coroutine mid-flight (which would run stop() but skip start()).
+                unplugGraceJob = null
+                // Only act if the phone never came back (still idle on a live session). A returning
+                // Plugged moves us to DEVICE_CONNECTED/STREAMING and cancels this job; a USB error
+                // moves us to DISCONNECTED and hands off to the reconnect path.
                 if (state == State.CONNECTING && adapterDriver != null) {
-                    logInfo(
-                        "[PHASE] No phone after ${UNPLUG_GRACE_MS}ms grace — re-initiating connection",
-                        tag = Logger.Tags.ADAPTR,
-                    )
-                    // Detach the field first so restart()→stop()→cancelUnplugGrace() can't cancel
-                    // THIS coroutine mid-restart (which would run stop() but skip start()).
-                    unplugGraceJob = null
-                    restart()
+                    if (suspendedForScreenOff || !isScreenInteractive()) {
+                        // Screen went OFF during the grace window — go dormant instead of churning.
+                        logInfo(
+                            "[PHASE] Grace expired but display off — going dormant (no re-initiate)",
+                            tag = Logger.Tags.ADAPTR,
+                        )
+                        if (!suspendedForScreenOff) suspendedForScreenOff = true
+                        withContext(Dispatchers.IO) { stop() }
+                    } else {
+                        logInfo(
+                            "[PHASE] No phone after ${UNPLUG_GRACE_MS}ms grace — re-initiating connection",
+                            tag = Logger.Tags.ADAPTR,
+                        )
+                        restart()
+                    }
                 }
             }
     }

@@ -718,3 +718,19 @@
      restart() so stop()->cancelUnplugGrace() can't abort the re-initiate mid-flight.
    - Pairs with [166]: fewer re-enumerations at the source; holding pattern still covers any that
      do occur. Affected: CarlinkManager.kt.
+
+[168] :: Fix [167] dormancy regression — gentle-unplug must defer to screen-off.
+   - v167 log (2026-06-07): the truck-shutdown sequence is screen-off → WIFI_DISCONNECTED →
+     Unplugged (~60s later). The gentle handler armed its grace and then re-initiated a full
+     connection WHILE THE SCREEN WAS OFF, re-acquiring the USB streaming wake lock and holding it
+     ~15 min until the device finally detached — exactly the battery drain dormancy prevents.
+   - onPhoneUnpluggedGently() now checks suspendedForScreenOff / isScreenInteractive() up front:
+     if the head unit is off, skip the hold/grace/re-initiate entirely — stop() and go dormant;
+     onScreenOn() reconnects when the truck returns.
+   - The grace-expiry path re-checks the gate too (screen may go off during the 10s window) and
+     goes dormant instead of restart()ing. Grace job self-detaches before stop()/restart().
+   - Screen-ON behavior unchanged: transient drops still get the 10s autoConn grace + one restart.
+   - Affected: CarlinkManager.kt.
+   - NOTE/finding: a spurious DISPLAY_REINIT (displayModeChanged=false) fires ~7-30s after launch
+     every session, forcing a teardown+reconnect right after the initial connect (and re-triggering
+     the late-permission path). Not yet root-caused; recovers via the v164 late-grant handler.
