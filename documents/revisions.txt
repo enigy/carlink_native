@@ -15,7 +15,7 @@
 // END EXAMPLE
 //
 // Major changes or discoveries. The appropriate .MD in Project:/Documentation/ should be updated/corrected or created with more technical information.
-//w
+//
 
 [1] :: Initial Release
 [2] :: Permission Prompt not shown, fixed. Ktlint issues corrected. PUSHED:
@@ -663,6 +663,37 @@
    - NOT stress-validated: neither session crossed 512KB; peaks 318KB and 147KB.
    - Emulator c2.goldfish software decoder kept up with 4K under light load.
 
+[143] :: Play AAOS compliance Attempt: add templates_host + ACCESS_SURFACE. Cluster Integration auto-on for debug emulator.
+   - Context: Google "Approved with Issues" a Closed-Beta vc140 — Automotive Support + App category not permitted.
+   - Manifest: added uses-feature android.software.car.templates_host required=true; cluster CarAppService depends on Templates Host.
+   - Manifest: added uses-permission androidx.car.app.ACCESS_SURFACE; host provisions a render surface to the CarAppService.
+   - Manifest: usb.host required=false — gminfo37 lacks the feature flag; required=true filtered the truck off AAOS track.
+   - Verified on emulator: host binds CarlinkClusterService, provisions virtual display, ContentProvider authority still claimed.
+   - Not added: APP_MAPS — cluster bound on vc139 and vc142 without it. Carlink projects phone maps.
+   - appCategory="audio" already present; notice example was false. To appeal, not fix.
+   - Kept by design: MainActivity stays distractionOptimized (projection surface); CarAppActivity stays hidden non-launcher binding stub.
+   - AdapterConfigPreference: Cluster Integration defaults ON when BuildConfig.DEBUG and isAaosEmulator(); production and hardware stay OFF.
+   - Clean install verified: component auto-enables, host binds, no manual toggle needed.
+   - Affected: AndroidManifest.xml, ui/settings/AdapterConfigPreference.kt
+
+[144] :: SYSTEM_UI_VISIBLE inset double-count fix + projection-size divergence WARN. Emulator immersive default removed.
+   - Root cause: applyDisplayMode SYSTEM_UI_VISIBLE set decorFitsSystemWindows(true); Compose windowInsetsPadding subtracted the same system bars again.
+   - Window pre-clipped to 788, Compose pad then gave 616; codec stayed 788 from stable WindowMetrics.
+   - On-screen surface 172px (top 76 + bottom 96) shorter than decoded frame; bottom content clipped.
+   - AA letterbox-cushioned the gap; CarPlay fillMaxSize would squish directly (unverified, no CarPlay 616 repro reached).
+   - Fix: MainActivity.kt decorFitsSystemWindows(window, false) for SYSTEM_UI_VISIBLE; only Compose subtracts insets now.
+   - Trigger intermittent: display-off/on (lock/unlock) on a soaked emulator; plain app toggles never armed it.
+   - Once latched, persists across activity restarts until process death; cold boot and reboot clear it.
+   - NOT deterministically validated: post-reboot the bug stops arming; fix rests on mechanism, not repeatable repro.
+   - Added CarlinkManager.kt post-debounce WARN: fires when stabilized surface != pre-computed codec resolution.
+   - Gated past SURFACE_DEBOUNCE so startup/relayout transients are ignored; only settled divergence logs.
+   - Verified fixed build: cold start, lock/unlock, AA oversize, CarPlay render all correct, zero WARNs.
+   - Immersive mode structurally immune (no windowInsetsPadding); codec=container=960, AA tested 5/5 clean post-reboot.
+   - PlatformDetector.requiresImmersiveDefaults() dropped isAaosEmulator(); AAOS emulator no longer defaults to FULLSCREEN_IMMERSIVE.
+   - Side effect: OEM Exit icon now visible on emulator; gminfo37 immersive + hidden-icon defaults unchanged.
+   - Corrected false comments: currentWindowMetrics.bounds is full 2400x960, not post-clip 788; decorFits=true not required for surface geometry.
+   - Affected: MainActivity.kt, CarlinkManager.kt, PlatformDetector.kt, DisplayModePreference.kt, AdapterConfigPreference.kt
+
 [162] :: com.enigy.carlink fork — GM/Chevy gminfo37 customizations. First published fork release.
    - versionCodes 142–161 were unpublished local iterations; this commit folds them into the fork's first published release.
    - UI / loading: replaced loading visuals with an antialiased concentric-rings animation (AnimatedConnectingBackground), slowed to half speed.
@@ -745,3 +776,18 @@
      status now reads 'Allow USB access — tap "Allow" on the dialog' instead of the vague
      "Adapter found — opening…", so the user taps Allow rather than Reset Device.
    - Affected: CarlinkManager.kt.
+
+[170] :: Merge upstream [143] Play-AAOS compliance + [144] SYSTEM_UI_VISIBLE inset fix.
+   - Folds upstream lvalen91 commits 80eb62c ([143]) and f4ca261 ([144]).
+   - [143] benefits the fork too: usb.host required=false stops Play filtering the gminfo37 truck off
+     the AAOS track; added android.software.car.templates_host (required) + androidx.car.app.ACCESS_SURFACE
+     for Play AAOS nav-app review. Cluster-nav auto-on default is gated to DEBUG+emulator, so our
+     release/hardware behavior is unchanged (still explicit opt-in).
+   - [144] AA display-cutoff fix: SYSTEM_UI_VISIBLE now uses decorFitsSystemWindows(false) so Compose
+     subtracts the system-bar insets exactly once (was double-counted 788→616, clipping the bottom).
+     Adds a post-debounce divergence WARN when the stabilized surface != codec resolution. gminfo37
+     defaults to FULLSCREEN_IMMERSIVE (structurally immune), so this only helps if the mode is switched.
+   - Conflict resolutions: versionCode kept ours; AndroidManifest took upstream's automotive required=true
+     + templates_host (Play-correct, was false on our side); revisions ordered [143]/[144] before [162].
+   - Affected (merge): AndroidManifest.xml, CarlinkManager.kt, MainActivity.kt, PlatformDetector.kt,
+     DisplayModePreference.kt, AdapterConfigPreference.kt, build.gradle.kts.
