@@ -791,3 +791,22 @@
      + templates_host (Play-correct, was false on our side); revisions ordered [143]/[144] before [162].
    - Affected (merge): AndroidManifest.xml, CarlinkManager.kt, MainActivity.kt, PlatformDetector.kt,
      DisplayModePreference.kt, AdapterConfigPreference.kt, build.gradle.kts.
+
+[171] :: directBootAware on MainActivity — attempt to unblock USB_DEVICE_ATTACHED (persistence).
+   - Diagnosis (06-13 logs, 3 sessions): the USB device re-enumerates on every truck-off/wake
+     (/010→/086 climbing monotonically across the day); each new /dev/bus/usb path is a new device
+     instance, so the permission grant is lost → prompt every wake. App process survives (dormancy
+     works); this is head-unit USB-power-cycling on sleep, not a regression.
+   - emteria.com/blog/remember-android-usb-permissions: the standard persistence recipe (manifest
+     USB_DEVICE_ATTACHED filter + device_filter + requestPermission + "use by default" checkbox) —
+     which we already have — additionally requires android:directBootAware="true" on the attach
+     activity. We were missing it. Automotive head units may only deliver the attach intent to
+     direct-boot-aware components (pre-unlock / sleep-wake locked state), which fits our 0-attach
+     observation. The persistent grant is keyed on VID/PID, so if it fires it survives re-enum.
+   - Added android:directBootAware="true" to MainActivity. Added [USB_ATTACH] diagnostic in
+     onCreate + onNewIntent: logs whether USB_DEVICE_ATTACHED now reaches the app and whether the
+     EXTRA_DEVICE carries an implicit permission grant (would let us skip the dialog).
+   - EXPERIMENT: if the attach now fires + the system shows a "use by default" resolver, checking it
+     once should persist across truck-off re-enumerations. If it still never fires, the platform
+     wall stands. Storage caveat: directBootAware is safe on this credential-less head unit.
+   - Affected: AndroidManifest.xml, MainActivity.kt.
