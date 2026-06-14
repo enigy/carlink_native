@@ -43,22 +43,27 @@
     <uses-feature
         android:name="android.hardware.microphone"
         android:required="false" />
-    <!-- AAOS-only distribution per developer.android.com/training/cars/distribute:
-         media apps on the Android Automotive OS Play track must declare
-         android.hardware.type.automotive as required=true (or unset). Setting it false
-         would let the same APK install on phones/tablets where the AAOS-specific
-         services have no host. -->
+    <!-- FORK NOTE: required=false on BOTH car features below (differs from upstream, which
+         sets required=true). Play only permits android.hardware.type.automotive (and other
+         car-only features) to be REQUIRED on the dedicated Automotive OS track — uploading to
+         any regular track with required=true is rejected:
+           "APKs and bundles must not require following features: android.hardware.type.automotive.
+            Some features can only be required in dedicated tracks."
+         Upstream targets the official AAOS track (needs Google automotive approval), so it uses
+         required=true. This fork uploads to a standard track for on-truck testing, so we declare
+         the features (documents the dependency + AAOS still matches them) without REQUIRING them
+         for install. Runtime behaviour is unchanged — gminfo37 has both features at runtime.
+         The theoretical downside (a phone could install it) is irrelevant for a controlled test
+         track. Flip back to required=true only if/when moving to the dedicated Automotive track. -->
     <uses-feature
         android:name="android.hardware.type.automotive"
-        android:required="true" />
+        android:required="false" />
     <!-- Car App Library Templates Host. The cluster CarAppService is bound and
-         surface-provisioned by com.google.android.apps.automotive.templates.host
-         (live-verified on the AAOS emulator: renderer_service holds an open
-         ConnectionRecord to CarlinkClusterService). Declared required per Play AAOS
-         review; every certified AAOS build — including GM — ships the Templates Host. -->
+         surface-provisioned by com.google.android.apps.automotive.templates.host. Declared but
+         required=false (see FORK NOTE above) so the standard-track upload isn't rejected. -->
     <uses-feature
         android:name="android.software.car.templates_host"
-        android:required="true" />
+        android:required="false" />
     <uses-feature
         android:name="android.hardware.location.gps"
         android:required="false" />

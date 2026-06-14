@@ -810,3 +810,15 @@
      once should persist across truck-off re-enumerations. If it still never fires, the platform
      wall stands. Storage caveat: directBootAware is safe on this credential-less head unit.
    - Affected: AndroidManifest.xml, MainActivity.kt.
+
+[172] :: Fork manifest: car features required=false so the standard-track Play upload is accepted.
+   - Play rejected the v171 AAB: "APKs and bundles must not require following features:
+     android.hardware.type.automotive. Some features can only be required in dedicated tracks."
+   - Cause: the [170] merge took upstream [143]'s android.hardware.type.automotive required=true,
+     which Play only permits on the dedicated Automotive OS track. Upstream targets that track;
+     this fork uploads to a standard track for on-truck testing.
+   - Set android.hardware.type.automotive AND android.software.car.templates_host to required=false
+     (proactive — templates_host would reject next). Features still declared (AAOS matches them);
+     runtime unchanged since gminfo37 has both. Flip back to required=true only for the dedicated
+     Automotive track. Confirms the fork's pre-[170] required=false was intentional.
+   - Affected: AndroidManifest.xml.
