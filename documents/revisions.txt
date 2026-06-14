@@ -839,3 +839,12 @@
      a moment later (which double-prompts). Falls through to the normal reconnect backoff on failure.
    - wakeConnectJob cancelled on OFF and in stop(); connect() is fire-and-forget so no self-cancel.
    - Affected: CarlinkManager.kt.
+
+[174] :: Back out the cluster "Title - Artist" concatenation (Spotify fixed; concat hurt readability).
+   - The [162] fork change concatenated song title + artist into the MediaSession TITLE field as a
+     workaround for a Spotify bug that dropped the artist. Spotify has since fixed the bug, and the
+     concatenation now makes the cluster media line hard to read.
+   - processMediaMetadata() now sends title and artist as separate fields again (updateMetadata +
+     CarlinkMediaBrowserService.updateNowPlaying), matching upstream/native behavior. The cluster
+     renders title/artist in their own fields. (The AA album-cover path already sent them separately.)
+   - Affected: CarlinkManager.kt.

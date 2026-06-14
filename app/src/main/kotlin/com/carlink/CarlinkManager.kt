@@ -2996,24 +2996,13 @@ class CarlinkManager(
                 albumCover != null ||
                 (duration > 0 && duration != previousDuration)
 
-        // Concatenate "Title - Artist" into the TITLE field. The GM cluster's media widget
-        // surfaces only the title line (it drops the separate artist field), so combining the
-        // two here is what makes the full "song - artist" string visible on the cluster.
-        // Falls back to whichever single value is present when one is missing.
-        val combinedTitle =
-            when {
-                !mediaInfo.songTitle.isNullOrEmpty() && !mediaInfo.songArtist.isNullOrEmpty() ->
-                    "${mediaInfo.songTitle} - ${mediaInfo.songArtist}"
-
-                else -> mediaInfo.songTitle ?: mediaInfo.songArtist
-            }
-
         if (metadataChanged) {
-            // Full metadata update (title/artist/album/cover/duration). title carries the
-            // combined "Title - Artist" string (see above); artist is still sent for
-            // consumers that render it separately (phone notification / Media Center).
+            // Send title and artist as separate fields (their native form). An earlier fork change
+            // concatenated "Title - Artist" into the title because a Spotify bug dropped the artist;
+            // Spotify has since fixed it, and the concatenation made the cluster line hard to read,
+            // so it was backed out (the cluster renders title/artist in their own fields again).
             mediaSessionManager?.updateMetadata(
-                title = combinedTitle,
+                title = mediaInfo.songTitle,
                 artist = mediaInfo.songArtist,
                 album = mediaInfo.albumName,
                 appName = mediaInfo.appName,
@@ -3022,7 +3011,7 @@ class CarlinkManager(
             )
 
             // Update foreground notification with current now-playing
-            CarlinkMediaBrowserService.updateNowPlaying(combinedTitle, mediaInfo.songArtist)
+            CarlinkMediaBrowserService.updateNowPlaying(mediaInfo.songTitle, mediaInfo.songArtist)
         }
 
         // Always update playback state (position ticks are the common case)
