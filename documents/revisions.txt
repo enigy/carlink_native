@@ -822,3 +822,20 @@
      runtime unchanged since gminfo37 has both. Flip back to required=true only for the dedicated
      Automotive track. Confirms the fork's pre-[170] required=false was intentional.
    - Affected: AndroidManifest.xml.
+
+[173] :: Wake-prompt smoothing — de-dupe screen signals + USB-settle delay.
+   - Verdict on [171]: directBootAware did NOT unblock USB_DEVICE_ATTACHED (0 [USB_ATTACH] events
+     in two v172 logs, directBootAware verified in the shipped manifest). gminfo37 never delivers
+     the attach intent to apps, so the "use by default" checkbox can't persist (it's only consulted
+     on attach) — software persistence is definitively ruled out. The per-wake prompt is the
+     platform reality; this entry just makes it a single clean tap.
+   - De-dupe: the DisplayManager listener AND the ACTION_SCREEN_ON/OFF broadcast both call
+     onScreenOn/onScreenOff every transition. onScreenOn now ignores a duplicate within
+     SCREEN_EVENT_DEDUPE_MS (6s), reset on OFF; onScreenOff was already idempotent. One wake = one
+     connect, not two.
+   - USB-settle: onScreenOn no longer connects immediately; scheduleWakeConnect() waits
+     WAKE_SETTLE_MS (2.5s) for the re-powered port/adapter to finish re-enumerating, then connect()
+     once — so we request permission for the stabilized device, not a transient path that changes
+     a moment later (which double-prompts). Falls through to the normal reconnect backoff on failure.
+   - wakeConnectJob cancelled on OFF and in stop(); connect() is fire-and-forget so no self-cancel.
+   - Affected: CarlinkManager.kt.

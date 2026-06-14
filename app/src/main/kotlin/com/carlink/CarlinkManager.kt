@@ -182,6 +182,17 @@ class CarlinkManager(
         // re-scanning, which wedges the adapter and forces a USB re-enumeration.
         private const val UNPLUG_GRACE_MS = 10000L
 
+        // On wake, the head unit re-powers the USB port and the adapter often re-enumerates
+        // for a few seconds. Wait this long before the first connect so we request USB permission
+        // ONCE for the stabilized device instead of a transient path that re-enumerates a moment
+        // later (which would prompt twice). Modest so the screen-on connect still feels prompt.
+        private const val WAKE_SETTLE_MS = 2500L
+
+        // Both the DisplayManager listener (Display ON/OFF) and the ACTION_SCREEN_ON/OFF broadcast
+        // fire on every transition — two near-simultaneous calls into onScreenOn/onScreenOff. Treat
+        // a second ON within this window as a duplicate (one wake = one connect). Reset on OFF.
+        private const val SCREEN_EVENT_DEDUPE_MS = 6000L
+
         // Auto-reconnect constants
         private const val MAX_RECONNECT_ATTEMPTS = 5
         private const val INITIAL_RECONNECT_DELAY_MS = 2000L // Start with 2 seconds
@@ -469,6 +480,12 @@ class CarlinkManager(
     // adapter's autoConn didn't bring the phone back within UNPLUG_GRACE_MS. Cancelled the
     // moment a fresh Plugged arrives, or on any stop()/handleError()/start().
     private var unplugGraceJob: Job? = null
+
+    // Wake settle timer ([WAKE_SETTLE_MS]) + dedupe timestamp for the redundant double
+    // screen-on/off signals (DisplayListener + broadcast). nanoTime is monotonic, import-free.
+    private var wakeConnectJob: Job? = null
+
+    @Volatile private var lastScreenOnHandledNs = 0L
 
     // Phone type tracking for keyframe request decisions
     /** Current phone type (CarPlay, Android Auto, etc.) from the PLUGGED message. Null when no phone connected. */
@@ -1123,6 +1140,7 @@ class CarlinkManager(
         logDebug("[LIFECYCLE] stop() called - clearing keyframe schedule and phoneType", tag = Logger.Tags.VIDEO)
         clearPairTimeout()
         cancelUnplugGrace() // Tearing down — drop any pending post-unplug re-initiate
+        cancelWakeConnect() // and any pending wake-settle connect
         cancelDelayedKeyframe()
         cancelReconnect() // Cancel any pending auto-reconnect
         negotiationRejected = false // Clear rejection flag for fresh connection
@@ -3251,8 +3269,11 @@ class CarlinkManager(
      * Called from MainActivity's ACTION_SCREEN_OFF receiver.
      */
     fun onScreenOff() {
-        if (suspendedForScreenOff) return
+        if (suspendedForScreenOff) return // dedupes the second of the two OFF signals
         suspendedForScreenOff = true
+        // Re-arm the onScreenOn dedupe so the NEXT genuine wake isn't mistaken for a duplicate.
+        lastScreenOnHandledNs = 0L
+        cancelWakeConnect()
         logInfo(
             "[POWER] Screen OFF — suspending adapter reconnect (head unit powered down). " +
                 "Will resume on screen ON.",
@@ -3270,6 +3291,19 @@ class CarlinkManager(
      * Called from MainActivity's ACTION_SCREEN_ON receiver.
      */
     fun onScreenOn() {
+        // De-dupe: the DisplayListener (Display ON) and the ACTION_SCREEN_ON broadcast both call
+        // this within a few seconds of each other on every wake. Handle one, ignore the other —
+        // otherwise we schedule two connects (and risk two permission prompts). Reset on OFF.
+        val nowNs = System.nanoTime()
+        if (nowNs - lastScreenOnHandledNs < SCREEN_EVENT_DEDUPE_MS * 1_000_000L) {
+            logInfo(
+                "[POWER] Screen ON (duplicate signal within ${SCREEN_EVENT_DEDUPE_MS}ms) — ignoring",
+                tag = Logger.Tags.USB,
+            )
+            return
+        }
+        lastScreenOnHandledNs = nowNs
+
         val wasSuspended = suspendedForScreenOff
         suspendedForScreenOff = false
         reconnectAttempts = 0
@@ -3277,12 +3311,41 @@ class CarlinkManager(
             "[POWER] Screen ON — resuming. state=${state}, wasSuspended=$wasSuspended",
             tag = Logger.Tags.USB,
         )
-        // Only kick a fresh attempt if we're not already connected/connecting. start() is
-        // idempotent (it stops any existing session first), and the reconnect body re-checks
-        // state == DISCONNECTED, so this won't disturb a live session or double-start.
+        // Only kick a fresh attempt if we're not already connected/connecting. The settle delay
+        // (scheduleWakeConnect) re-checks state==DISCONNECTED before connecting, so this won't
+        // disturb a live session or double-start.
         if (state == State.DISCONNECTED) {
-            scheduleReconnect()
+            scheduleWakeConnect()
         }
+    }
+
+    /**
+     * After a wake, wait [WAKE_SETTLE_MS] for the re-powered USB port / adapter to finish
+     * re-enumerating, then connect ONCE. Requesting permission against a still-enumerating device
+     * yields a path that changes moments later, costing a second prompt; settling first means we
+     * request for the stabilized device. connect() handles the actual attempt + reconnect backoff.
+     */
+    private fun scheduleWakeConnect() {
+        wakeConnectJob?.cancel()
+        logInfo("[POWER] Wake — settling USB ${WAKE_SETTLE_MS}ms before connect", tag = Logger.Tags.USB)
+        wakeConnectJob =
+            scope.launch {
+                delay(WAKE_SETTLE_MS)
+                if (state == State.DISCONNECTED && !suspendedForScreenOff && isScreenInteractive()) {
+                    connect()
+                } else {
+                    logInfo(
+                        "[POWER] Wake settle elapsed — skipping connect " +
+                            "(state=$state, suspended=$suspendedForScreenOff)",
+                        tag = Logger.Tags.USB,
+                    )
+                }
+            }
+    }
+
+    private fun cancelWakeConnect() {
+        wakeConnectJob?.cancel()
+        wakeConnectJob = null
     }
 
     private fun clearPairTimeout() {
