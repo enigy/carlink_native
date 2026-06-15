@@ -54,6 +54,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.unit.IntSize
@@ -339,7 +340,17 @@ fun MainScreen(
                 modifier = Modifier.fillMaxSize(),
                 contentAlignment = Alignment.Center,
             ) {
-                // Animated background fills the overlay entirely
+                // Static mountain background fills the overlay (behind the sparkles + content).
+                // ContentScale.Crop scales to fill the 2400x960 area and centre-crops any overflow
+                // (the image is ~2.49:1, so almost nothing is cropped) — no stretching.
+                Image(
+                    painter = painterResource(id = R.drawable.loading_bg),
+                    contentDescription = null,
+                    contentScale = ContentScale.Crop,
+                    modifier = Modifier.fillMaxSize(),
+                )
+
+                // Twinkling sparkle particles over the background (rings/glow removed).
                 AnimatedConnectingBackground()
 
                 Column(

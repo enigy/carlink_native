@@ -848,3 +848,15 @@
      CarlinkMediaBrowserService.updateNowPlaying), matching upstream/native behavior. The cluster
      renders title/artist in their own fields. (The AA album-cover path already sent them separately.)
    - Affected: CarlinkManager.kt.
+
+[175] :: Loading screen: static image background behind the sparkles.
+   - Added drawable/loading_bg.jpg (user-supplied 1024x412 ~2.49:1 mountain image) and drew it as
+     the base layer of the connecting overlay (Image, ContentScale.Crop, fillMaxSize) behind the
+     sparkle particles and the icon + status text.
+   - AnimatedConnectingBackground stripped to sparkles-only: removed the dark radial gradient,
+     concentric rings, and breathing centre glow; particles recolored white with alpha 0.55 so they
+     read over the warm image. Transparent canvas so the image shows through.
+   - MainScreen: Image added before AnimatedConnectingBackground in the loading Box; ContentScale import.
+   - NOTE: keep this image SIDELOAD-ONLY unless usage rights for public (Play) distribution are
+     confirmed — it resembles copyrighted artwork. Swap a licensed/original image for the AAB.
+   - Affected: AnimatedConnectingBackground.kt, MainScreen.kt, res/drawable/loading_bg.jpg (new).
