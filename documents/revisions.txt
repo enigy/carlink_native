@@ -888,3 +888,10 @@
      ~2.49:1) — a unique image distinct from the earlier inspiration, so the prior copyright
      caveat no longer applies. Resource name unchanged (R.drawable.loading_bg), no code change.
    - Affected: res/drawable/loading_bg.png (new), res/drawable/loading_bg.jpg (removed).
+
+[180] :: Optimize loading background — downscale + WebP.
+   - loading_bg.png (3260x1312, 5.8MB) → loading_bg.webp (2400x966, ~109KB): downscaled to the
+     panel's native width (aspect preserved, no distortion), re-encoded WebP q90. ~98% smaller APK
+     footprint, no visible change on the 2400x960 head unit. Resource name unchanged
+     (R.drawable.loading_bg), no code change.
+   - Affected: res/drawable/loading_bg.webp (new), res/drawable/loading_bg.png (removed).
