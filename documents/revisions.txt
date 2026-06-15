@@ -882,3 +882,9 @@
    - Tunables at top of ForestFogEffect.kt: FOG_BAND_FRACTION (0.20), FOG_CYCLE_MS (32000),
      PUFFS_PER_LAYER (9), FAR_TINT / NEAR_TINT.
    - Affected: ForestFogEffect.kt (new), MainScreen.kt.
+
+[179] :: Refresh loading background image (now an original/distinct asset).
+   - Replaced res/drawable/loading_bg.jpg with the user's updated loading_bg.png (3260x1312,
+     ~2.49:1) — a unique image distinct from the earlier inspiration, so the prior copyright
+     caveat no longer applies. Resource name unchanged (R.drawable.loading_bg), no code change.
+   - Affected: res/drawable/loading_bg.png (new), res/drawable/loading_bg.jpg (removed).
