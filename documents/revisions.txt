@@ -871,3 +871,14 @@
    - Removed the radial-gradient scrim Box behind the loading icon + status text (and the now-unused
      Brush import). Loading screen is back to image + sparkles + icon/text with no scrim.
    - Affected: MainScreen.kt.
+
+[178] :: Loading screen: drifting fog over the forest (replaces sparkle particles).
+   - New ForestFogEffect composable: two parallax layers of soft translucent radial puffs that
+     scroll horizontally and wrap seamlessly, confined to the bottom 20% of the screen, densest at
+     the bottom and fading up into the image. Near layer drifts one width per ~32s ("mediocre
+     pace"); far layer 1.7x slower + fainter. Warm pale tints to blend with the sunset image.
+   - MainScreen now uses ForestFogEffect in place of AnimatedConnectingBackground (sparkles).
+     AnimatedConnectingBackground.kt retained (unused) so we can switch back if desired.
+   - Tunables at top of ForestFogEffect.kt: FOG_BAND_FRACTION (0.20), FOG_CYCLE_MS (32000),
+     PUFFS_PER_LAYER (9), FAR_TINT / NEAR_TINT.
+   - Affected: ForestFogEffect.kt (new), MainScreen.kt.

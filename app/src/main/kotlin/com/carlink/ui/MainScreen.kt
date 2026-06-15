@@ -67,7 +67,7 @@ import com.carlink.logging.logInfo
 import com.carlink.protocol.MessageSerializer
 import com.carlink.protocol.MultiTouchAction
 import com.carlink.protocol.PhoneType
-import com.carlink.ui.components.AnimatedConnectingBackground
+import com.carlink.ui.components.ForestFogEffect
 import com.carlink.ui.components.LoadingSpinner
 import com.carlink.ui.components.VideoSurface
 import com.carlink.ui.components.rememberVideoSurfaceState
@@ -350,8 +350,8 @@ fun MainScreen(
                     modifier = Modifier.fillMaxSize(),
                 )
 
-                // Twinkling sparkle particles over the background (rings/glow removed).
-                AnimatedConnectingBackground()
+                // Drifting fog over the forest (bottom ~20%), in place of the sparkle particles.
+                ForestFogEffect()
 
                 Column(
                     horizontalAlignment = Alignment.CenterHorizontally,
