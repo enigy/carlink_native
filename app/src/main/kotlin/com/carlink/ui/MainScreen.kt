@@ -53,7 +53,6 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clipToBounds
-import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalDensity
@@ -353,25 +352,6 @@ fun MainScreen(
 
                 // Twinkling sparkle particles over the background (rings/glow removed).
                 AnimatedConnectingBackground()
-
-                // Soft radial scrim centered behind the icon + status text so the light content
-                // stays readable over the bright sky, without dimming the rest of the image.
-                Box(
-                    modifier =
-                        Modifier
-                            .fillMaxSize()
-                            .background(
-                                Brush.radialGradient(
-                                    colors =
-                                        listOf(
-                                            Color.Black.copy(alpha = 0.50f),
-                                            Color.Black.copy(alpha = 0.30f),
-                                            Color.Transparent,
-                                        ),
-                                    radius = 720f,
-                                ),
-                            ),
-                )
 
                 Column(
                     horizontalAlignment = Alignment.CenterHorizontally,

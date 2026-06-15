@@ -866,3 +866,8 @@
      radial-gradient scrim (Black 0.50 → 0.30 → Transparent, radius 720px) between the sparkle
      overlay and the centered content, so the text lifts off the image without dimming the rest.
    - Affected: MainScreen.kt.
+
+[177] :: Revert [176] scrim — unnecessary.
+   - Removed the radial-gradient scrim Box behind the loading icon + status text (and the now-unused
+     Brush import). Loading screen is back to image + sparkles + icon/text with no scrim.
+   - Affected: MainScreen.kt.
