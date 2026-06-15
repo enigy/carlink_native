@@ -860,3 +860,9 @@
    - NOTE: keep this image SIDELOAD-ONLY unless usage rights for public (Play) distribution are
      confirmed — it resembles copyrighted artwork. Swap a licensed/original image for the AAB.
    - Affected: AnimatedConnectingBackground.kt, MainScreen.kt, res/drawable/loading_bg.jpg (new).
+
+[176] :: Loading screen: soft radial scrim behind the icon + status text.
+   - The light icon/status text washed out over the bright sky of loading_bg. Added a centered
+     radial-gradient scrim (Black 0.50 → 0.30 → Transparent, radius 720px) between the sparkle
+     overlay and the centered content, so the text lifts off the image without dimming the rest.
+   - Affected: MainScreen.kt.
