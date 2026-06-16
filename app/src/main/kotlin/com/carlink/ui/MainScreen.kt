@@ -25,6 +25,7 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.requiredHeight
 import androidx.compose.foundation.layout.requiredWidth
@@ -356,6 +357,9 @@ fun MainScreen(
                 Column(
                     horizontalAlignment = Alignment.CenterHorizontally,
                     verticalArrangement = Arrangement.Center,
+                    // Shift the icon + status text down ~1/2 inch (80dp = 1/2" at 160dp/in) from
+                    // dead-centre so it sits lower over the image.
+                    modifier = Modifier.offset(y = 80.dp),
                 ) {
                     Image(
                         painter = painterResource(id = R.drawable.ic_phone_projection),

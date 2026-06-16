@@ -895,3 +895,8 @@
      footprint, no visible change on the 2400x960 head unit. Resource name unchanged
      (R.drawable.loading_bg), no code change.
    - Affected: res/drawable/loading_bg.webp (new), res/drawable/loading_bg.png (removed).
+
+[181] :: Loading screen: shift icon + status text down ~1/2 inch.
+   - Added Modifier.offset(y = 80.dp) to the centered content Column (80dp = 1/2" at 160dp/in), so
+     the phone icon + status text sit lower over the background image instead of dead-centre.
+   - Affected: MainScreen.kt.
