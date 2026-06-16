@@ -900,3 +900,11 @@
    - Added Modifier.offset(y = 80.dp) to the centered content Column (80dp = 1/2" at 160dp/in), so
      the phone icon + status text sit lower over the background image instead of dead-centre.
    - Affected: MainScreen.kt.
+
+[182] :: New launcher icon — wireframe "C + play" Carlink mark.
+   - Replaced the adaptive-icon layers (background/foreground/monochrome) at all five densities with
+     an original Carlink brand mark: a glowing wireframe C arc (opening right) + outlined play
+     triangle on a dark radial-gradient background. Mark sized to the adaptive 66dp safe zone so the
+     neon glow isn't clipped; monochrome layer = flat white strokes for themed icons.
+   - Manifest unchanged (icon + roundIcon already point at @mipmap/ic_launcher adaptive icon).
+   - Affected: mipmap-{mdpi,hdpi,xhdpi,xxhdpi,xxxhdpi}/ic_launcher_{background,foreground,monochrome}.png.
