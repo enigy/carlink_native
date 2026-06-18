@@ -351,6 +351,7 @@ class MainActivity : ComponentActivity() {
                             // into a deterministic one: new SurfaceView, fresh HWC plane,
                             // fresh WindowMetrics, renegotiated Open() — every time.
                             onResetConnection = { reinitializeForDisplayMode(currentDisplayMode) },
+                            onPhoneConnected = ::onPhoneConnectedRefreshCluster,
                         )
                     }
                 }
@@ -1162,6 +1163,40 @@ class MainActivity : ComponentActivity() {
         }, 2000)
     }
 
+    // Counts phone connections within this process lifetime, used by [onPhoneConnectedRefreshCluster].
+    private var clusterConnectCount = 0
+
+    /**
+     * Refresh the cluster binding when the phone connects, so each trip gets a FRESH cluster session.
+     *
+     * Why: on gminfo37 the cluster session is established once at app startup ([onCreate] →
+     * [launchCarAppActivity]); the per-trip refresh hook is USB_DEVICE_ATTACHED, which this head
+     * unit never delivers. Because the app process now survives across trips (screen-off dormancy),
+     * that one startup session is reused every trip and eventually goes stale — the Templates Host
+     * drops/replaces the binding without the session's onDestroy firing, leaving the process-global
+     * [ClusterBindingState.sessionAlive] / primarySession statics pointing at a dead session. New
+     * sessions then come up "secondary/passive" and never relay nav/media (the "works for a few
+     * trips then the cluster goes blank" bug). Re-establishing on connect avoids the staleness
+     * entirely. Mirrors the manual fix (toggle cluster nav off/on) but automatic and per-trip.
+     *
+     * The FIRST connect each process is skipped — onCreate already made a fresh session, so the
+     * working first trip is left untouched; only subsequent connects (where staleness accrues) are
+     * refreshed. No-op when cluster navigation is disabled.
+     */
+    private fun onPhoneConnectedRefreshCluster() {
+        if (!AdapterConfigPreference.getInstance(this).getClusterNavigationSync()) return
+        clusterConnectCount++
+        if (clusterConnectCount <= 1) {
+            logInfo("[CLUSTER] First phone connect this process — keeping startup session", tag = "MAIN")
+            return
+        }
+        logInfo(
+            "[CLUSTER] Phone connect #$clusterConnectCount — refreshing cluster binding for a fresh session",
+            tag = "MAIN",
+        )
+        restartClusterBinding()
+    }
+
     /**
      * Unregisters the USB detachment BroadcastReceiver.
      */
@@ -1202,6 +1237,7 @@ fun CarlinkApp(
     onResetCluster: () -> Unit,
     onReinitForDisplayMode: (DisplayMode) -> Unit = {},
     onResetConnection: () -> Unit = {},
+    onPhoneConnected: () -> Unit = {},
 ) {
     // Survives normal recomposition via remember{}, but discarded on manager rebuild
     // because CarlinkApp itself is gated by `if (manager != null)` at the Activity
@@ -1238,6 +1274,7 @@ fun CarlinkApp(
                 showSettings = true
             },
             onResetConnection = onResetConnection,
+            onPhoneConnected = onPhoneConnected,
         )
 
         // SettingsScreen slides in ON TOP of MainScreen

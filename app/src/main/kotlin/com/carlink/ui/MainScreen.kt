@@ -84,6 +84,9 @@ fun MainScreen(
     displayMode: DisplayMode,
     onNavigateToSettings: () -> Unit,
     onResetConnection: (() -> Unit)? = null,
+    // Fired once each time the phone transitions to connected (DEVICE_CONNECTED/STREAMING).
+    // MainActivity uses it to refresh the cluster binding so each trip gets a fresh session.
+    onPhoneConnected: () -> Unit = {},
 ) {
     val scope = rememberCoroutineScope()
     // Key state on carlinkManager identity — when manager is replaced (display mode reinit),
@@ -95,9 +98,20 @@ fun MainScreen(
     val surfaceState = rememberVideoSurfaceState()
     var isAndroidAuto by remember(carlinkManager) { mutableStateOf(false) }
     var aaCropParams by remember(carlinkManager) { mutableStateOf<CarlinkManager.AaCropParams?>(null) }
+    // Fire onPhoneConnected once per connection (re-armed on disconnect) so the cluster binding is
+    // refreshed at the start of each trip — not on every state tick.
+    var connectNotified by remember(carlinkManager) { mutableStateOf(false) }
 
     LaunchedEffect(connectionState) {
         logInfo("[UI_STATE] MainScreen connection state: $connectionState", tag = "UI")
+        val connected = connectionState == CarlinkManager.State.DEVICE_CONNECTED ||
+            connectionState == CarlinkManager.State.STREAMING
+        if (connected && !connectNotified) {
+            connectNotified = true
+            onPhoneConnected()
+        } else if (connectionState == CarlinkManager.State.DISCONNECTED) {
+            connectNotified = false
+        }
     }
 
     var lastTouchTime by remember(carlinkManager) { mutableLongStateOf(0L) }

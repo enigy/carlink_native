@@ -908,3 +908,19 @@
      neon glow isn't clipped; monochrome layer = flat white strokes for themed icons.
    - Manifest unchanged (icon + roundIcon already point at @mipmap/ic_launcher adaptive icon).
    - Affected: mipmap-{mdpi,hdpi,xhdpi,xxhdpi,xxxhdpi}/ic_launcher_{background,foreground,monochrome}.png.
+
+[183] :: Fix cluster nav/media going blank after a few trips — refresh binding on phone connect.
+   - Root cause: the cluster session is established once at app startup (onCreate → launchCarAppActivity);
+     the per-trip refresh hook is USB_DEVICE_ATTACHED, which gminfo37 never delivers. With the process
+     now surviving across trips (screen-off dormancy), that one session is reused every trip and goes
+     stale — Templates Host drops/replaces the binding without the session's onDestroy firing, so the
+     process-global ClusterBindingState.sessionAlive + ClusterMainSession.primarySession statics stay
+     pinned to a dead session. New sessions then come up "secondary/passive" and never relay nav/media,
+     while CarPlay (independent of the cluster) keeps working. Manual fix was toggling cluster-nav off/on.
+   - Fix: MainScreen fires a new onPhoneConnected callback once per connection (transition into
+     DEVICE_CONNECTED/STREAMING, re-armed on disconnect). MainActivity.onPhoneConnectedRefreshCluster
+     skips the first connect (startup session is fresh) and calls restartClusterBinding() on subsequent
+     connects — finishes the CarAppActivity task (forces Host unbind → onDestroy clears the statics) and
+     re-launches for a fresh primary session. Automates the manual toggle, per trip. No-op when cluster
+     nav is off.
+   - Affected: MainScreen.kt, MainActivity.kt (CarlinkApp + onPhoneConnectedRefreshCluster).
