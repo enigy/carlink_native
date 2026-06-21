@@ -73,6 +73,16 @@ class ClusterMainSession : Session() {
      *  after a terminal maneuver (arrived, endOfNavigation, endOfDirections). */
     private var arrivalTimeoutJob: Job? = null
 
+    /**
+     * Set true once we've relayed a terminal (arrival) maneuver; cleared when a genuinely new,
+     * non-terminal maneuver arrives (a fresh trip). While latched we suppress the
+     * navigationEnded()→navigationStarted() re-start churn caused by the adapter oscillating
+     * NaviStatus and re-sending the "arrived" frame at trip end — that churn made the cluster nav
+     * card flicker (disappear/reappear) repeatedly during the final approach. The arrival is shown
+     * once, navigation ends once, and it stays ended until a new trip begins.
+     */
+    private var arrivalLatched = false
+
     companion object {
         /** Terminal CPManeuverType values that indicate navigation is complete. */
         private val TERMINAL_MANEUVER_TYPES = intArrayOf(
@@ -248,11 +258,26 @@ class ClusterMainSession : Session() {
 
         if (state.isActive) {
             hasSeenActiveNav = true
+            val terminal = state.maneuverType in TERMINAL_MANEUVER_TYPES
+
+            // A non-terminal maneuver means a genuinely new trip is underway — drop the arrival
+            // latch so navigation can re-start normally.
+            if (!terminal) arrivalLatched = false
 
             // Re-enter navigation if a prior path cleared isNavigating: adapter flush
             // (isIdle branch below), onStopNavigation callback from the Host, or the
             // arrival-timeout auto-end. New active data means a fresh trip is starting.
             if (!isNavigating) {
+                // Anti-flicker: once we've arrived and ended, do NOT re-start navigation for the
+                // repeated "arrived" frames the adapter keeps sending (it oscillates NaviStatus at
+                // trip end). Re-starting here just to immediately re-show "arrived" and re-arm the
+                // timeout is what made the cluster card flicker. Only a non-terminal maneuver (new
+                // trip, latch cleared above) gets past this guard. Keep the watchdog heartbeat
+                // fresh — the cluster state is correct (showing arrival), nothing is wrong.
+                if (terminal && arrivalLatched) {
+                    ClusterBindingState.lastRelayElapsedMs = SystemClock.elapsedRealtime()
+                    return
+                }
                 logInfo("[CLUSTER_MAIN] navigationStarted() (re-start)", tag = Logger.Tags.CLUSTER)
                 try {
                     navManager.navigationStarted()
@@ -290,7 +315,10 @@ class ClusterMainSession : Session() {
             // Arrival timeout: if maneuver is a terminal type (arrived, endOfNavigation, etc.)
             // start a grace period. If the adapter doesn't send NaviStatus=0 within the window,
             // end navigation ourselves. Catches firmware gap where arrival is sent without flush.
-            if (state.maneuverType in TERMINAL_MANEUVER_TYPES) {
+            if (terminal) {
+                // Latch arrival: we've now shown the arrival card, so subsequent terminal frames
+                // (after navigation ends) are suppressed by the re-start guard above.
+                arrivalLatched = true
                 // Only start a timeout if none is pending — the window is NOT reset by
                 // subsequent terminal-maneuver updates within the same arrival burst.
                 if (arrivalTimeoutJob?.isActive != true) {

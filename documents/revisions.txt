@@ -952,3 +952,15 @@
      successful updateTrip).
    - Affected: MainActivity.kt (watchdog + restartClusterBinding + onPhoneConnectedRefreshCluster),
      ClusterMainSession.kt (relay heartbeat + onDestroy CAS guard), ClusterBindingState.kt (heartbeat field).
+
+[185] :: Stop the cluster nav card flickering at trip end.
+   - At arrival the adapter oscillates NaviStatus (active→flush→active…) and keeps re-sending the
+     "arrived" frame. The cluster code faithfully translated each oscillation into navigationEnded()
+     then navigationStarted() (re-start), so the cluster nav card disappeared/reappeared ~every few
+     seconds during the final approach. Cosmetic, end-of-trip only.
+   - Fix: arrival latch in ClusterMainSession. The first terminal (arrival) maneuver is shown once and
+     latches; navigation then ends once (flush OR the 10s arrival timeout) and STAYS ended — repeated
+     terminal frames no longer re-start navigation. The latch clears when a genuinely new, non-terminal
+     maneuver arrives (next trip), so normal navigation resumes cleanly. While latched we keep the
+     watchdog relay-heartbeat fresh so it doesn't misread a steady "arrived" state as a blank cluster.
+   - Affected: ClusterMainSession.kt (arrivalLatched + re-start guard in processStateUpdate).
