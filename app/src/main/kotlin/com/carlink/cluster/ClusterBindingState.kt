@@ -5,10 +5,15 @@ package com.carlink.cluster
  * Templates Host binding. MainActivity cannot directly query the out-of-process
  * CarAppActivity session, so this shared object substitutes for that lookup.
  *
- * Writes (ClusterMainSession only):
+ * Writes (ClusterMainSession):
  * - `true` in onCreateScreen when a session starts.
- * - `false` in the session's onDestroy observer, but only for the *primary* session
- *   (secondary sessions from the primary/secondary multiplexing do not touch the flag).
+ * - `false` in the session's onDestroy observer, but only for the *primary* session AND only
+ *   when it is still the current primary (a superseded late teardown leaves the flag alone;
+ *   secondary sessions never touch it).
+ *
+ * Writes (MainActivity.restartClusterBinding):
+ * - `false` immediately after finishing the CarAppActivity task, so a delayed/absent onDestroy
+ *   can't leave the flag stuck `true` and deadlock the relaunch guard below.
  *
  * Reads (MainActivity.launchCarAppActivity):
  * - If `true`, the launch is deferred and retried after 4s, preventing a second
@@ -21,4 +26,20 @@ package com.carlink.cluster
 object ClusterBindingState {
     @Volatile
     var sessionAlive = false
+
+    /**
+     * `SystemClock.elapsedRealtime()` of the most recent successful `updateTrip()` relay
+     * (0 = none since process start). Written by the primary [ClusterMainSession] on every
+     * relay; read by MainActivity's cluster watchdog as a heartbeat.
+     *
+     * Purpose: the Templates Host can tear down our session mid-drive without a phone
+     * reconnect (observed 2026-06-20: `Primary session destroyed` fires with no connect /
+     * screen / restart event while the phone keeps navigating). After that teardown nothing
+     * relays until the next physical reconnect. The watchdog uses [sessionAlive] (fast —
+     * flips within ~3s of a Host teardown) plus this heartbeat (backstop for the rarer case
+     * where the Host drops the binding WITHOUT onDestroy firing, leaving [sessionAlive]
+     * stale-true) to detect "navigating but cluster not relaying" and re-establish the binding.
+     */
+    @Volatile
+    var lastRelayElapsedMs: Long = 0L
 }

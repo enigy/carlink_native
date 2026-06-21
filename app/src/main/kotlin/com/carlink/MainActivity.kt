@@ -15,6 +15,7 @@ import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
 import android.view.WindowManager
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
@@ -331,6 +332,11 @@ class MainActivity : ComponentActivity() {
             }, 4000)
         }
 
+        // Start the cluster-session watchdog (re-establishes the binding if the Host tears our
+        // session down mid-drive without a phone reconnect). Self-gates on the cluster-nav setting
+        // each tick, so it's safe to start unconditionally.
+        mainHandler.postDelayed(clusterWatchdogRunnable, clusterWatchdogIntervalMs)
+
         // Set up Compose UI
         // CarlinkManager is observed via mutableStateOf — replacement during display mode
         // reinit triggers full recomposition without Activity restart.
@@ -446,6 +452,9 @@ class MainActivity : ComponentActivity() {
 
     override fun onDestroy() {
         super.onDestroy()
+
+        // Stop the cluster-session watchdog
+        mainHandler.removeCallbacks(clusterWatchdogRunnable)
 
         // Unregister USB detachment receiver
         unregisterUsbDetachReceiver()
@@ -1146,6 +1155,9 @@ class MainActivity : ComponentActivity() {
      */
     fun restartClusterBinding() {
         logWarn("[CLUSTER] restartClusterBinding() — tearing down and re-establishing binding chain", tag = "MAIN")
+        // Stamp the watchdog cooldown so it doesn't pile a second restart on top of this one
+        // while the fresh session is coming up (bind + first relay take a few seconds).
+        lastClusterRelaunchElapsedMs = SystemClock.elapsedRealtime()
         NavigationStateManager.clear()
         val am = getSystemService(ActivityManager::class.java)
         for (appTask in am.appTasks) {
@@ -1155,6 +1167,12 @@ class MainActivity : ComponentActivity() {
                 break
             }
         }
+        // We just finished the CarAppActivity task, so any prior session is dead. Force-clear the
+        // shared flag now: if the old session's onDestroy is delayed (or the Host dropped the
+        // binding without firing it at all), [launchCarAppActivity]'s sessionAlive guard would
+        // otherwise defer the relaunch forever, leaving the cluster permanently blank. The real
+        // replacement session sets the flag true again in onCreateScreen.
+        ClusterBindingState.sessionAlive = false
         Handler(Looper.getMainLooper()).postDelayed({
             if (!isDestroyed && !isFinishing) {
                 logInfo("[CLUSTER] Re-launching CarAppActivity after teardown", tag = "MAIN")
@@ -1163,37 +1181,108 @@ class MainActivity : ComponentActivity() {
         }, 2000)
     }
 
-    // Counts phone connections within this process lifetime, used by [onPhoneConnectedRefreshCluster].
+    // Counts phone connections within this process lifetime (diagnostic, used in the connect log).
     private var clusterConnectCount = 0
 
     /**
-     * Refresh the cluster binding when the phone connects, so each trip gets a FRESH cluster session.
+     * Refresh the cluster binding when the phone connects, so each connection gets a FRESH cluster
+     * session.
      *
      * Why: on gminfo37 the cluster session is established once at app startup ([onCreate] →
      * [launchCarAppActivity]); the per-trip refresh hook is USB_DEVICE_ATTACHED, which this head
      * unit never delivers. Because the app process now survives across trips (screen-off dormancy),
-     * that one startup session is reused every trip and eventually goes stale — the Templates Host
-     * drops/replaces the binding without the session's onDestroy firing, leaving the process-global
-     * [ClusterBindingState.sessionAlive] / primarySession statics pointing at a dead session. New
-     * sessions then come up "secondary/passive" and never relay nav/media (the "works for a few
-     * trips then the cluster goes blank" bug). Re-establishing on connect avoids the staleness
-     * entirely. Mirrors the manual fix (toggle cluster nav off/on) but automatic and per-trip.
+     * that one startup session is reused every trip and goes stale — the Templates Host drops/
+     * replaces the binding, leaving the process-global [ClusterBindingState.sessionAlive] /
+     * primarySession statics pointing at a dead session. Re-establishing on connect avoids the
+     * staleness. Mirrors the manual fix (toggle cluster nav off/on) but automatic.
      *
-     * The FIRST connect each process is skipped — onCreate already made a fresh session, so the
-     * working first trip is left untouched; only subsequent connects (where staleness accrues) are
-     * refreshed. No-op when cluster navigation is disabled.
+     * EVERY connect refreshes — including the first. The earlier "skip the first connect, trust the
+     * onCreate startup session" optimization was wrong: on a process that survived dormancy (the
+     * common case here), that startup session is already dead by the first connect, so the FIRST
+     * drive after a wake showed a blank cluster until the second connect (confirmed in the
+     * 2026-06-20 logs: a full route relayed nothing between "first connect" and connect #2). The
+     * cost of always refreshing is one redundant relaunch (~2s) on a true cold boot, before
+     * navigation has started — harmless. No-op when cluster navigation is disabled.
+     *
+     * Mid-drive Host teardowns (no reconnect) are handled separately by [clusterWatchdogTick].
      */
     private fun onPhoneConnectedRefreshCluster() {
         if (!AdapterConfigPreference.getInstance(this).getClusterNavigationSync()) return
         clusterConnectCount++
-        if (clusterConnectCount <= 1) {
-            logInfo("[CLUSTER] First phone connect this process — keeping startup session", tag = "MAIN")
-            return
-        }
         logInfo(
             "[CLUSTER] Phone connect #$clusterConnectCount — refreshing cluster binding for a fresh session",
             tag = "MAIN",
         )
+        restartClusterBinding()
+    }
+
+    // --- Cluster-session watchdog -------------------------------------------------------------
+    //
+    // Re-establishes the cluster binding when it dies WITHOUT a phone reconnect — the case
+    // [onPhoneConnectedRefreshCluster] cannot cover. The Templates Host tears our session down
+    // mid-drive on its own (observed 2026-06-20: `Primary session destroyed` with no connect /
+    // screen / restart event while the phone keeps navigating); after that nothing relays until
+    // the next physical reconnect, so the cluster — and the mirrored media card — go blank for the
+    // rest of the drive. The watchdog detects "phone navigating but cluster not relaying" and
+    // rebuilds the binding within ~10s.
+
+    /** Watchdog poll interval. */
+    private val clusterWatchdogIntervalMs = 3_000L
+
+    /**
+     * After a (re)launch, suppress the watchdog this long so it doesn't stack a second restart
+     * while the fresh session binds and produces its first relay. Comfortably covers the 2s
+     * teardown delay + bind handshake + first updateTrip().
+     */
+    private val clusterWatchdogCooldownMs = 20_000L
+
+    /**
+     * Backstop staleness threshold. Normal relays land every ~1s while driving, but legitimately
+     * pause up to ~30s when stopped at a light (the app dedups when distance/maneuver don't
+     * change), so this must sit well above that. A genuine blank lasts minutes, so 60s separates
+     * the two cleanly. Only used for the rare "binding dropped but sessionAlive stuck true" case;
+     * the common Host-teardown case is caught immediately via [ClusterBindingState.sessionAlive].
+     */
+    private val clusterRelayStaleMs = 60_000L
+
+    /** `SystemClock.elapsedRealtime()` of the last cluster (re)launch; gates the cooldown. */
+    @Volatile
+    private var lastClusterRelaunchElapsedMs = 0L
+
+    private val clusterWatchdogRunnable =
+        object : Runnable {
+            override fun run() {
+                try {
+                    clusterWatchdogTick()
+                } finally {
+                    if (!isDestroyed && !isFinishing) {
+                        mainHandler.postDelayed(this, clusterWatchdogIntervalMs)
+                    }
+                }
+            }
+        }
+
+    private fun clusterWatchdogTick() {
+        if (!AdapterConfigPreference.getInstance(this).getClusterNavigationSync()) return
+
+        // Only act while the phone is actively navigating — no active nav, no cluster to keep alive.
+        if (!NavigationStateManager.state.value.isActive) return
+
+        val now = SystemClock.elapsedRealtime()
+        if (now - lastClusterRelaunchElapsedMs < clusterWatchdogCooldownMs) return
+
+        val sessionDead = !ClusterBindingState.sessionAlive
+        val lastRelay = ClusterBindingState.lastRelayElapsedMs
+        val relayStale = lastRelay == 0L || now - lastRelay > clusterRelayStaleMs
+        if (!sessionDead && !relayStale) return
+
+        val sinceRelay = if (lastRelay == 0L) -1 else now - lastRelay
+        logWarn(
+            "[CLUSTER] Watchdog: navigating but cluster not relaying " +
+                "(sessionAlive=${ClusterBindingState.sessionAlive}, sinceRelayMs=$sinceRelay) — re-establishing",
+            tag = "MAIN",
+        )
+        // restartClusterBinding() stamps lastClusterRelaunchElapsedMs, arming the cooldown.
         restartClusterBinding()
     }
 

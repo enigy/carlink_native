@@ -1,6 +1,7 @@
 package com.carlink.cluster
 
 import android.content.Intent
+import android.os.SystemClock
 import androidx.car.app.CarContext
 import androidx.car.app.Screen
 import androidx.car.app.Session
@@ -175,9 +176,15 @@ class ClusterMainSession : Session() {
             object : DefaultLifecycleObserver {
                 override fun onDestroy(owner: LifecycleOwner) {
                     if (isPrimary) {
-                        primarySession.compareAndSet(this@ClusterMainSession, null)
+                        // Only the CURRENT primary clears the shared flag. The CAS fails when a
+                        // newer session already claimed primary (e.g. this onDestroy is a late
+                        // teardown of the previous session, dispatched after restartClusterBinding
+                        // already stood up a replacement) — in that case we must NOT flip
+                        // sessionAlive to false, or we'd blank a live session.
+                        val wasCurrentPrimary = primarySession.compareAndSet(this@ClusterMainSession, null)
                         logInfo(
-                            "[CLUSTER_MAIN] Primary session destroyed — releasing NavigationManager ownership",
+                            "[CLUSTER_MAIN] Primary session destroyed — releasing NavigationManager ownership" +
+                                if (!wasCurrentPrimary) " (superseded — leaving sessionAlive untouched)" else "",
                             tag = Logger.Tags.CLUSTER,
                         )
                         arrivalTimeoutJob?.cancel()
@@ -198,7 +205,9 @@ class ClusterMainSession : Session() {
                         scope?.cancel()
                         scope = null
                         navigationManager = null
-                        ClusterBindingState.sessionAlive = false
+                        if (wasCurrentPrimary) {
+                            ClusterBindingState.sessionAlive = false
+                        }
                     } else {
                         logInfo("[CLUSTER_MAIN] Secondary session destroyed", tag = Logger.Tags.CLUSTER)
                     }
@@ -261,6 +270,10 @@ class ClusterMainSession : Session() {
             try {
                 val trip = TripBuilder.buildTrip(state, carContext)
                 navManager.updateTrip(trip)
+                // Heartbeat for MainActivity's cluster watchdog: proves the cluster is
+                // actually receiving fresh data, independent of the (occasionally stale)
+                // sessionAlive flag. See [ClusterBindingState.lastRelayElapsedMs].
+                ClusterBindingState.lastRelayElapsedMs = SystemClock.elapsedRealtime()
                 logNavi {
                     "[CLUSTER_MAIN] Trip relayed: maneuver=${state.maneuverType}, " +
                         "dist=${state.remainDistance}m, road=${state.roadName}" +

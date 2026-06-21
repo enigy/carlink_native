@@ -924,3 +924,31 @@
      re-launches for a fresh primary session. Automates the manual toggle, per trip. No-op when cluster
      nav is off.
    - Affected: MainScreen.kt, MainActivity.kt (CarlinkApp + onPhoneConnectedRefreshCluster).
+
+[184] :: Cluster nav/media still went blank — close the two remaining gaps v183 didn't cover.
+   - Log analysis (2026-06-19/20, v183) found two distinct blank-cluster causes, both with the phone
+     STILL navigating (real turn-by-turn, distances decreasing) but ZERO trips relaying:
+     1. First-connect skip was wrong on a dormant-surviving process: v183 "kept the startup session" on
+        connect #1, but that session is already dead after the process survives truck-off — so the FIRST
+        drive after a wake relayed nothing until connect #2. (Confirmed: a full ~5-min route relayed 0
+        trips between "first connect" and connect #2, then worked instantly once #2 refreshed.)
+     2. Host-initiated mid-drive teardown: the Templates Host destroys our session on its own (no connect,
+        screen, or restart event) while the phone keeps navigating. Nothing rebuilt it until the next
+        physical reconnect, so the cluster + mirrored media card stayed blank for the rest of the drive.
+   - Fix 1: removed the first-connect skip — EVERY phone connect now refreshes the binding. Cost is one
+     redundant relaunch (~2s) on a true cold boot, before navigation starts. Deterministic fix for #1.
+   - Fix 2: added a cluster-session watchdog in MainActivity (3s poll). While cluster nav is enabled and
+     the phone is actively navigating, if the session is dead (ClusterBindingState.sessionAlive==false,
+     flips within ~3s of a Host teardown) OR no relay landed for >60s (backstop for a binding dropped
+     without onDestroy, leaving the flag stuck true), it calls restartClusterBinding(). 60s sits well
+     above the legitimate ~30s relay pause when stopped at a light (the app dedups when nothing changes);
+     a genuine blank lasts minutes. 20s post-relaunch cooldown prevents stacking restarts. Recovers a
+     blank cluster in ~10s instead of "until next reconnect."
+   - Hardening: restartClusterBinding force-clears sessionAlive after finishing the CarAppActivity task,
+     so a delayed/absent onDestroy can't deadlock launchCarAppActivity's guard (blank forever). And the
+     session onDestroy only clears the shared flag when it's still the CURRENT primary (CAS) — a
+     superseded late teardown no longer blanks a live replacement session.
+   - New: ClusterBindingState.lastRelayElapsedMs relay heartbeat (written by ClusterMainSession on each
+     successful updateTrip).
+   - Affected: MainActivity.kt (watchdog + restartClusterBinding + onPhoneConnectedRefreshCluster),
+     ClusterMainSession.kt (relay heartbeat + onDestroy CAS guard), ClusterBindingState.kt (heartbeat field).
