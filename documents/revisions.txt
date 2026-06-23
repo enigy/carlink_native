@@ -991,3 +991,21 @@
    - Upstream [145] CPU optimization (H264 feeder de-spin + audio pacing) was set aside, not merged.
    - Affected: media/CarlinkMediaBrowserService.kt (onTaskRemoved guard), MainActivity.kt (watchdog),
      cluster/ClusterMainSession.kt + cluster/ClusterBindingState.kt (remove relay heartbeat).
+
+[187] :: DIAGNOSTIC build — steering-wheel skip investigation (no functional change).
+   - v186 confirmed (on-truck) NOT to fix skip/prev, even with the media session now stable — so the
+     skip gap is a routing/advertisement issue, not the session churn. This build adds a probe to find
+     out exactly where skip is lost; it does NOT change behavior (skip still won't work on v187).
+   - [SKIP_PROBE] logs — via log() so they land in the uploaded FILE logs, not logcat-only — what GM
+     actually sees: the PLATFORM MediaSession PlaybackState `actions` bitmask (read through
+     MediaSession.getPlatformToken()), specifically whether ACTION_SKIP_TO_NEXT/SKIP_TO_PREVIOUS are
+     advertised, plus PLAY/PAUSE for reference. Also logs the player-side determinants (effective
+     seek commands + timeline hasNext/hasPrev/count/idx). Fired on each GM/AAOS observer connect and,
+     throttled to 20s, during active playback.
+   - Also switched the existing "GM/AAOS observer bound" line from Log.i (logcat-only) to log() — it
+     never appeared in any field log before, so we've been blind to which GM brokers actually bind.
+   - Branch plan once logs arrive: if SKIP_NEXT/PREV absent from platform actions → advertisement bug
+     (prime suspect: UsbAdapterPlayer's single-item timeline → fix with a synthetic prev/current/next
+     timeline so hasNext/hasPrev are true). If present but skip still doesn't route → GM-side (source
+     classification / media-key service), investigate GMMediaKeyService path + legacy media-button.
+   - Sideload APK only (diagnostic; not for Play). Affected: media/MediaSessionManager.kt.
