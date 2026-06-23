@@ -964,3 +964,30 @@
      maneuver arrives (next trip), so normal navigation resumes cleanly. While latched we keep the
      watchdog relay-heartbeat fresh so it doesn't misread a steady "arrived" state as a blank cluster.
    - Affected: ClusterMainSession.kt (arrivalLatched + re-start guard in processStateUpdate).
+
+[186] :: Cluster rethink — stop cluster refreshes from killing the media session + de-noise the watchdog.
+   - Log analysis of v185 (2026-06-21/22) found the v184/v185 cluster work caused regressions:
+     * Steering-wheel skip/prev + all media controls broke: restartClusterBinding() calls
+       finishAndRemoveTask() on the CarAppActivity task, and Android delivers onTaskRemoved to
+       CarlinkMediaBrowserService for ANY task in the app. The service's onTaskRemoved blindly
+       stopSelf()'d while foreground, so EVERY cluster refresh tore down the media session
+       (releaseInstance) — 13 init/release cycles in one 6.5h log, 0 metadata, 0 transport, with
+       a 22-min media-dead gap after one watchdog fire.
+     * Cluster needlessly blanking: the watchdog's 60s relay-staleness backstop false-fired on
+       healthy sessions (stopped at a light / between trips). 3 of 4 firings in the logs were
+       false positives (sessionAlive=true), each restarting a working cluster (and killing media).
+   - Fix A (decouple media): CarlinkMediaBrowserService.onTaskRemoved now ignores removal of the
+     CarAppActivity ('.templates') task — that's internal cluster churn, not a user dismissal. Only a
+     genuine MainActivity swipe-away stops the service. Media now survives every cluster refresh.
+   - Fix B (de-noise watchdog): re-establish ONLY on the reliable signal — navActive && !sessionAlive
+     (every real Host teardown fires onDestroy → sessionAlive=false). Removed the relay-staleness
+     trigger and all its machinery (ClusterBindingState.lastRelayElapsedMs heartbeat, its write in
+     ClusterMainSession, and the arrival-latch heartbeat hack). No more false-positive restarts.
+   - Fix C (refresh-on-connect kept): now that refreshes are media-safe, every-connect refresh stays
+     for deterministic recovery of a dormancy-survived dead startup session.
+   - NOT addressed here (separate follow-ups): the pre-existing steering-wheel skip ROUTING gap
+     (skip stopped reaching onSkipToNext around v170-172, independent of session churn — revisit once
+     media is confirmed stable); and the gminfo37 USB-permission startup stall (platform wall).
+   - Upstream [145] CPU optimization (H264 feeder de-spin + audio pacing) was set aside, not merged.
+   - Affected: media/CarlinkMediaBrowserService.kt (onTaskRemoved guard), MainActivity.kt (watchdog),
+     cluster/ClusterMainSession.kt + cluster/ClusterBindingState.kt (remove relay heartbeat).

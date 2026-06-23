@@ -179,6 +179,19 @@ class CarlinkMediaBrowserService : MediaLibraryService() {
      * and grep the symbol names rather than the line numbers when re-verifying.
      */
     override fun onTaskRemoved(rootIntent: Intent?) {
+        // Ignore removal of the cluster's CarAppActivity task. restartClusterBinding() finishes
+        // that task via finishAndRemoveTask() to force the Templates Host to re-bind, and Android
+        // delivers onTaskRemoved for ANY task in our application — not just the launcher task.
+        // Without this guard the service mistakes our own internal cluster churn for the user
+        // swiping the app away and stopSelf()s, tearing down the media session (no metadata, no
+        // transport, no steering-wheel controls) every time the cluster binding is refreshed.
+        // Only a genuine MainActivity dismissal should stop the service.
+        if (rootIntent?.component?.className == CAR_APP_ACTIVITY_CLASS) {
+            if (BuildConfig.DEBUG) {
+                Log.d(TAG, "[BROWSER_SERVICE] onTaskRemoved for CarAppActivity (cluster churn) — keeping service alive")
+            }
+            return
+        }
         if (isForeground) {
             if (BuildConfig.DEBUG) {
                 Log.d(TAG, "[BROWSER_SERVICE] onTaskRemoved during FGS — stopSelf without pause cascade")
@@ -396,6 +409,13 @@ class CarlinkMediaBrowserService : MediaLibraryService() {
         }
 
         private const val NOTIFICATION_CHANNEL_ID = "carlink_connection"
+
+        /**
+         * Class name of the hidden cluster CarAppActivity (its own `.templates` task). When
+         * MainActivity.restartClusterBinding() finishes that task to force a Templates Host
+         * re-bind, Android delivers [onTaskRemoved] here too — see the guard there.
+         */
+        private const val CAR_APP_ACTIVITY_CLASS = "androidx.car.app.activity.CarAppActivity"
 
         /**
          * Broadcast action used by [probeUsbPermissionsAtBoot]. Kept separate from

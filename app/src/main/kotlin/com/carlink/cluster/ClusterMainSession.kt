@@ -1,7 +1,6 @@
 package com.carlink.cluster
 
 import android.content.Intent
-import android.os.SystemClock
 import androidx.car.app.CarContext
 import androidx.car.app.Screen
 import androidx.car.app.Session
@@ -272,10 +271,8 @@ class ClusterMainSession : Session() {
                 // repeated "arrived" frames the adapter keeps sending (it oscillates NaviStatus at
                 // trip end). Re-starting here just to immediately re-show "arrived" and re-arm the
                 // timeout is what made the cluster card flicker. Only a non-terminal maneuver (new
-                // trip, latch cleared above) gets past this guard. Keep the watchdog heartbeat
-                // fresh — the cluster state is correct (showing arrival), nothing is wrong.
+                // trip, latch cleared above) gets past this guard.
                 if (terminal && arrivalLatched) {
-                    ClusterBindingState.lastRelayElapsedMs = SystemClock.elapsedRealtime()
                     return
                 }
                 logInfo("[CLUSTER_MAIN] navigationStarted() (re-start)", tag = Logger.Tags.CLUSTER)
@@ -295,10 +292,6 @@ class ClusterMainSession : Session() {
             try {
                 val trip = TripBuilder.buildTrip(state, carContext)
                 navManager.updateTrip(trip)
-                // Heartbeat for MainActivity's cluster watchdog: proves the cluster is
-                // actually receiving fresh data, independent of the (occasionally stale)
-                // sessionAlive flag. See [ClusterBindingState.lastRelayElapsedMs].
-                ClusterBindingState.lastRelayElapsedMs = SystemClock.elapsedRealtime()
                 logNavi {
                     "[CLUSTER_MAIN] Trip relayed: maneuver=${state.maneuverType}, " +
                         "dist=${state.remainDistance}m, road=${state.roadName}" +

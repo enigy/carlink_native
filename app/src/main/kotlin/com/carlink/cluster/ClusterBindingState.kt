@@ -26,20 +26,4 @@ package com.carlink.cluster
 object ClusterBindingState {
     @Volatile
     var sessionAlive = false
-
-    /**
-     * `SystemClock.elapsedRealtime()` of the most recent successful `updateTrip()` relay
-     * (0 = none since process start). Written by the primary [ClusterMainSession] on every
-     * relay; read by MainActivity's cluster watchdog as a heartbeat.
-     *
-     * Purpose: the Templates Host can tear down our session mid-drive without a phone
-     * reconnect (observed 2026-06-20: `Primary session destroyed` fires with no connect /
-     * screen / restart event while the phone keeps navigating). After that teardown nothing
-     * relays until the next physical reconnect. The watchdog uses [sessionAlive] (fast —
-     * flips within ~3s of a Host teardown) plus this heartbeat (backstop for the rarer case
-     * where the Host drops the binding WITHOUT onDestroy firing, leaving [sessionAlive]
-     * stale-true) to detect "navigating but cluster not relaying" and re-establish the binding.
-     */
-    @Volatile
-    var lastRelayElapsedMs: Long = 0L
 }

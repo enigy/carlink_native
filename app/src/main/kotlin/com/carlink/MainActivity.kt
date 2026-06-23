@@ -1218,32 +1218,28 @@ class MainActivity : ComponentActivity() {
 
     // --- Cluster-session watchdog -------------------------------------------------------------
     //
-    // Re-establishes the cluster binding when it dies WITHOUT a phone reconnect — the case
-    // [onPhoneConnectedRefreshCluster] cannot cover. The Templates Host tears our session down
-    // mid-drive on its own (observed 2026-06-20: `Primary session destroyed` with no connect /
-    // screen / restart event while the phone keeps navigating); after that nothing relays until
-    // the next physical reconnect, so the cluster — and the mirrored media card — go blank for the
-    // rest of the drive. The watchdog detects "phone navigating but cluster not relaying" and
-    // rebuilds the binding within ~10s.
+    // Re-establishes the cluster binding when the Templates Host tears our session down mid-drive
+    // WITHOUT a phone reconnect — the case [onPhoneConnectedRefreshCluster] cannot cover (observed
+    // 2026-06-20: `Primary session destroyed` with no connect / screen / restart event while the
+    // phone keeps navigating; afterwards nothing relays until the next physical reconnect, so the
+    // cluster goes blank for the rest of the drive).
+    //
+    // Trigger is the session's own liveness flag ONLY: every real teardown fires the session's
+    // onDestroy, flipping [ClusterBindingState.sessionAlive] to false. That is reliable and
+    // false-positive-free. An earlier relay-staleness backstop (re-establish if no updateTrip for
+    // 60s) was REMOVED: normal relays legitimately pause 30s+ at lights and minutes between trips,
+    // so it fired on perfectly healthy sessions and needlessly blanked the cluster (3 of 4 firings
+    // in the 2026-06-21 logs were such false positives).
 
     /** Watchdog poll interval. */
     private val clusterWatchdogIntervalMs = 3_000L
 
     /**
      * After a (re)launch, suppress the watchdog this long so it doesn't stack a second restart
-     * while the fresh session binds and produces its first relay. Comfortably covers the 2s
-     * teardown delay + bind handshake + first updateTrip().
+     * while the fresh session binds (sessionAlive is false during that window). Comfortably covers
+     * the 2s teardown delay + bind handshake.
      */
     private val clusterWatchdogCooldownMs = 20_000L
-
-    /**
-     * Backstop staleness threshold. Normal relays land every ~1s while driving, but legitimately
-     * pause up to ~30s when stopped at a light (the app dedups when distance/maneuver don't
-     * change), so this must sit well above that. A genuine blank lasts minutes, so 60s separates
-     * the two cleanly. Only used for the rare "binding dropped but sessionAlive stuck true" case;
-     * the common Host-teardown case is caught immediately via [ClusterBindingState.sessionAlive].
-     */
-    private val clusterRelayStaleMs = 60_000L
 
     /** `SystemClock.elapsedRealtime()` of the last cluster (re)launch; gates the cooldown. */
     @Volatile
@@ -1268,18 +1264,16 @@ class MainActivity : ComponentActivity() {
         // Only act while the phone is actively navigating — no active nav, no cluster to keep alive.
         if (!NavigationStateManager.state.value.isActive) return
 
+        // Re-establish only when the session is CONFIRMED dead (see section header for why this is
+        // the sole trigger).
+        if (ClusterBindingState.sessionAlive) return
+
+        // Hold off if we just (re)launched — the replacement session is still binding.
         val now = SystemClock.elapsedRealtime()
         if (now - lastClusterRelaunchElapsedMs < clusterWatchdogCooldownMs) return
 
-        val sessionDead = !ClusterBindingState.sessionAlive
-        val lastRelay = ClusterBindingState.lastRelayElapsedMs
-        val relayStale = lastRelay == 0L || now - lastRelay > clusterRelayStaleMs
-        if (!sessionDead && !relayStale) return
-
-        val sinceRelay = if (lastRelay == 0L) -1 else now - lastRelay
         logWarn(
-            "[CLUSTER] Watchdog: navigating but cluster not relaying " +
-                "(sessionAlive=${ClusterBindingState.sessionAlive}, sinceRelayMs=$sinceRelay) — re-establishing",
+            "[CLUSTER] Watchdog: navigating but cluster session is dead (sessionAlive=false) — re-establishing",
             tag = "MAIN",
         )
         // restartClusterBinding() stamps lastClusterRelaunchElapsedMs, arming the cooldown.
