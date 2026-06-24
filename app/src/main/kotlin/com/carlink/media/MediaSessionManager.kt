@@ -564,11 +564,12 @@ class MediaSessionManager(
                 packageName == "com.android.systemui"
             if (isGmAaosObserver) {
                 // log() (not Log.i) so this lands in the uploaded FILE logs, not just logcat.
+                // Confirmed useful 2026-06-23: revealed com.gm.rhmi / gmcarmediaservice /
+                // gmaudio.server as the brokers that bind — kept for future field diagnosis.
                 log(
                     "[MEDIA_SESSION] GM/AAOS observer bound: package=$packageName uid=$uid " +
                         "trusted=$isTrusted ifaceVer=${controller.interfaceVersion}",
                 )
-                logTransportProbe("gm-connect:$packageName")
             }
 
             if (BuildConfig.DEBUG) {
@@ -1084,13 +1085,6 @@ class MediaSessionManager(
                     "[MEDIA_SESSION] Playback: ${if (playing) "PLAYING" else "PAUSED"} " +
                         "($reason, pos=${position}ms, dur=${durationMs}ms)",
                 )
-                // v187 skip diagnostic: sample the platform PlaybackState actions during real
-                // playback (when GM would route a skip), throttled to once per 20s. Off-main here,
-                // so logTransportProbe logs the decisive platform actions and skips player reads.
-                if (playing && (now - lastTransportProbeMs) / 1_000_000L > 20_000L) {
-                    lastTransportProbeMs = now
-                    logTransportProbe("playing")
-                }
             } catch (e: Exception) {
                 log("[MEDIA_SESSION] Failed to update playback state: ${e.message}")
             }
@@ -1266,61 +1260,6 @@ class MediaSessionManager(
     private fun log(message: String) {
         if (BuildConfig.DEBUG) Log.d(TAG, message)
         logCallback.log(message)
-    }
-
-    // --- v187 transport-control diagnostic (steering-wheel skip investigation) -----------------
-    // Skip/prev never reach onSkipToNext even though play/pause does and the session is stable
-    // (v186). This probe logs — into the FILE log via log(), NOT logcat-only Log.i — both what our
-    // player advertises AND, decisively, what the PLATFORM MediaSession exposes to GM's
-    // steering-wheel handler: GMMediaKeyService reads the platform session's PlaybackState
-    // `actions` bitmask. If ACTION_SKIP_TO_NEXT/PREVIOUS are absent there, it's an advertisement
-    // problem (prime suspect: the single-item timeline, no next/prev item → fix with a synthetic
-    // prev/current/next timeline). If present but skip still doesn't arrive, it's GM-side routing.
-    // Remove once the skip path is resolved.
-    @Volatile
-    private var lastTransportProbeMs = 0L
-
-    private fun logTransportProbe(reason: String) {
-        // Decisive: what the platform MediaSession exposes to GM (binder read, safe off-main).
-        try {
-            val token = mediaSession?.platformToken
-            if (token == null) {
-                log("[SKIP_PROBE] ($reason) platform token null")
-            } else {
-                val ps = android.media.session.MediaController(context, token).playbackState
-                if (ps == null) {
-                    log("[SKIP_PROBE] ($reason) platform PlaybackState null (not yet published)")
-                } else {
-                    val a = ps.actions
-                    fun has(bit: Long) = (a and bit) != 0L
-                    log(
-                        "[SKIP_PROBE] ($reason) platform actions=0x${java.lang.Long.toHexString(a)} " +
-                            "state=${ps.state} | SKIP_NEXT=${has(android.media.session.PlaybackState.ACTION_SKIP_TO_NEXT)} " +
-                            "SKIP_PREV=${has(android.media.session.PlaybackState.ACTION_SKIP_TO_PREVIOUS)} " +
-                            "PLAY_PAUSE=${has(android.media.session.PlaybackState.ACTION_PLAY_PAUSE)} " +
-                            "PLAY=${has(android.media.session.PlaybackState.ACTION_PLAY)} " +
-                            "PAUSE=${has(android.media.session.PlaybackState.ACTION_PAUSE)}",
-                    )
-                }
-            }
-        } catch (e: Exception) {
-            log("[SKIP_PROBE] ($reason) platform read failed: ${e.message}")
-        }
-        // Player-side determinants — only on the application looper (SimpleBasePlayer contract).
-        if (Looper.myLooper() != Looper.getMainLooper()) return
-        val p = player ?: return
-        try {
-            log(
-                "[SKIP_PROBE] ($reason) player: seekNext=${p.isCommandAvailable(Player.COMMAND_SEEK_TO_NEXT)} " +
-                    "seekPrev=${p.isCommandAvailable(Player.COMMAND_SEEK_TO_PREVIOUS)} " +
-                    "seekNextItem=${p.isCommandAvailable(Player.COMMAND_SEEK_TO_NEXT_MEDIA_ITEM)} " +
-                    "seekPrevItem=${p.isCommandAvailable(Player.COMMAND_SEEK_TO_PREVIOUS_MEDIA_ITEM)} " +
-                    "hasNext=${p.hasNextMediaItem()} hasPrev=${p.hasPreviousMediaItem()} " +
-                    "count=${p.mediaItemCount} idx=${p.currentMediaItemIndex}",
-            )
-        } catch (e: Exception) {
-            log("[SKIP_PROBE] ($reason) player read failed: ${e.message}")
-        }
     }
 
     /**

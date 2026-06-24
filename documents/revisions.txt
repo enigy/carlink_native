@@ -1009,3 +1009,28 @@
      timeline so hasNext/hasPrev are true). If present but skip still doesn't route → GM-side (source
      classification / media-key service), investigate GMMediaKeyService path + legacy media-button.
    - Sideload APK only (diagnostic; not for Play). Affected: media/MediaSessionManager.kt.
+
+[188] :: Skip RESOLVED — clean up the probe + fold in upstream [145] CPU optimization.
+   - On-truck v187 result: steering-wheel skip + previous WORK again (onSkipToNext received), and the
+     probe settled the root cause. The platform MediaSession advertised SKIP_NEXT/SKIP_PREV the WHOLE
+     time (actions=0x42b3, even with the single-item timeline hasNext=false) — so it was NEVER an
+     advertisement bug, and NO timeline change is needed. The real blocker was the churning media
+     session: GM (com.gm.rhmi / com.gm.car.media.gmcarmediaservice / com.gm.gmaudio.server) couldn't
+     keep our source elected to route skip to a session that kept getting destroyed. [186]'s media
+     decoupling fixed the churn (this v187 log: 1 init / 0 release over ~3h, vs [185]'s 13/13), so skip
+     now routes. The earlier "[186] didn't fix it" test was a false negative (GM election hadn't settled).
+   - Same v187 log also confirms [186] Fix B: cluster watchdog fired 0 times (no false positives),
+     1347 trips relayed, 74 metadata updates — issues #1 (cluster) and #2 (media+skip) both resolved.
+   - Cleanup: removed the [SKIP_PROBE] diagnostic (function + per-tick/connect calls + throttle field).
+     KEPT the "GM/AAOS observer bound" log() line — it was invisible (logcat-only) before and is
+     genuinely useful for field diagnosis. No behavior change from v187.
+   - Folded in upstream (lvalen91) [145] CPU optimization (set aside in [186], now merged):
+     * Video: H264Renderer feeder loop — parkNanos(1ms) busy-spin → blocking park(), unparked from
+       feedDirect() after each stagingOffer (+ stopStaging() for shutdown). Upstream measured the
+       H264-Feeder idle spin gone (~6% → 0% idle, ~1.5-3% at full 60fps).
+     * Audio: DualStreamAudioManager playback loop sleeps 5ms every pass (was only when fully idle),
+       removing the active-playback busy-spin. `didWork` is now vestigial (assigned, unread).
+     Both are downstream consumers — no change to USB read, heartbeat, video decode, or session paths.
+   - Remaining: only #3 (gminfo37 USB-permission startup stall — platform wall).
+   - Affected: media/MediaSessionManager.kt (remove probe), video/H264Renderer.java + audio/
+     DualStreamAudioManager.kt (upstream CPU opt).
