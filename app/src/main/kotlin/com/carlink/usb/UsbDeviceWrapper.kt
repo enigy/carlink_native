@@ -38,6 +38,16 @@ private const val MAX_PAYLOAD_SIZE = 2 * 1024 * 1024 // 2MB — reject corrupted
 // (logcat_20260420_063729_carlink.txt:15735); zero spurious 15s timeouts across 6 sessions.
 private const val INITIAL_RESPONSE_TIMEOUT_MS = 15_000L
 
+// Mid-session silence threshold: how long the adapter may send NO data (after data was
+// flowing) before we treat it as not responding. Measured by WALL CLOCK — see the reading
+// loop. Set to 60s, honoring the original "2 × 30s" intent, but enforced as genuine elapsed
+// time so brief gaps (the adapter between scan messages while re-pairing the phone) don't
+// trip a teardown. A teardown here closes the device, which makes the CPC200 re-enumerate
+// (→ USB-permission re-prompt) and aborts the in-progress wireless re-pair — the core of the
+// "stuck loop, needs Reset" spiral. Patience here lets the adapter keep trying to reach the
+// phone on the existing connection instead.
+private const val MID_SESSION_SILENCE_MS = 60_000L
+
 /**
  * USB Device Wrapper for Carlinkit Adapter Communication.
  *
@@ -485,8 +495,13 @@ class UsbDeviceWrapper(
             //    If no data arrives at all, the USB IN endpoint is dead (adapter can't write).
             // 2. Mid-session silence: if data was flowing and stops, adapter disconnected/stalled.
             var hasReceivedData = false
-            var consecutiveTimeouts = 0
-            val maxConsecutiveTimeouts = 2 // 2 × 30s timeout = 60s of mid-session silence
+            // Wall-clock timestamp of the last data actually received. We must NOT count
+            // bulkTransfer -1 returns as fixed-duration timeouts: bulkTransfer can return -1 well
+            // before the full read `timeout` elapses (transient bad state, or the adapter briefly
+            // quiet between phone-scan messages), so "N consecutive -1s = N × timeout" fires far
+            // too early — observed tearing the adapter down ~3s into an 11s session the log
+            // mislabeled "(60s)". See MID_SESSION_SILENCE_MS.
+            var lastDataMs = System.currentTimeMillis()
             val initialResponseDeadline = System.currentTimeMillis() + INITIAL_RESPONSE_TIMEOUT_MS
 
             try {
@@ -508,17 +523,25 @@ class UsbDeviceWrapper(
                                         break
                                     }
                                 } else {
-                                    // Was receiving data, now silent — adapter disconnected?
-                                    consecutiveTimeouts++
-                                    if (consecutiveTimeouts >= maxConsecutiveTimeouts) {
+                                    // Data was flowing, now a read returned no data. Only treat as
+                                    // "adapter not responding" after a GENUINE wall-clock gap — brief
+                                    // gaps (between scan messages, transient -1s) are tolerated so we
+                                    // don't tear down a live adapter that's still trying to reach the
+                                    // phone (which would force a re-enumerate + permission re-prompt).
+                                    val silentMs = System.currentTimeMillis() - lastDataMs
+                                    if (silentMs >= MID_SESSION_SILENCE_MS) {
                                         log(
-                                            "Adapter silent: $consecutiveTimeouts consecutive timeouts " +
-                                                "(${consecutiveTimeouts * timeout / 1000}s) after data was flowing",
+                                            "Adapter silent: ${silentMs / 1000}s of no data after data was " +
+                                                "flowing — treating as not responding",
                                         )
                                         callback.onError("USB read timeout — adapter not responding")
                                         break
                                     }
                                 }
+                                // Guard against busy-spin: bulkTransfer can return -1 faster than
+                                // `timeout` during a transient bad state. A short sleep keeps the
+                                // read thread from pegging a core while we wait out the silence window.
+                                Thread.sleep(200)
                                 continue
                             }
                             log("Incomplete header read: $headerResult bytes")
@@ -526,8 +549,8 @@ class UsbDeviceWrapper(
                         continue
                     }
 
-                    // Successful header read — reset timeout counter
-                    consecutiveTimeouts = 0
+                    // Successful header read — record data arrival for wall-clock silence tracking.
+                    lastDataMs = System.currentTimeMillis()
                     hasReceivedData = true
 
                     // Parse header.

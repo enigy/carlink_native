@@ -1060,3 +1060,28 @@
      failures) is the candidate mitigation — to be designed next.
    - No functional change. Affected: navigation/NavigationStateManager.kt, cluster/ClusterBindingState.kt,
      cluster/ClusterMainSession.kt, CarlinkManager.kt.
+
+[190] :: Fix premature adapter teardown that drives the reconnect-spiral / reset-loop.
+   - Root cause (from 06-26..06-28 logs): the mid-session "adapter silent" detector counted each
+     bulkTransfer -1 return as a full 30s read timeout ("2 × 30s = 60s"), but bulkTransfer can return
+     -1 well before the timeout elapses (transient bad state, or the adapter briefly quiet between
+     phone-scan messages). Result: it fired ~3s into an 11s session the log mislabeled "(60s)",
+     tearing the adapter down. handleError then closes the USB device, which makes the CPC200
+     physically re-enumerate → fresh USB-permission prompt (60s platform-wall timeout) AND aborts the
+     in-progress wireless re-pair to the iPhone. That is the engine of the "stuck loop, needs Reset
+     (often several presses)" spiral — worst case 27 min of looping in the 06-26 log.
+   - Fix: make the silence detector WALL-CLOCK based (UsbDeviceWrapper.startReadingLoop). Track
+     lastDataMs (updated on every successful read) and only declare "not responding" after a genuine
+     MID_SESSION_SILENCE_MS (60s) gap with zero data. Brief gaps / fast -1s no longer trip it, so a
+     live adapter that's still scanning for the phone is left alone to recover on its own connection
+     instead of being torn down + re-enumerated. Added a 200ms sleep on the -1 path to prevent
+     busy-spin if bulkTransfer returns -1 faster than the timeout. Genuine USB detaches are unaffected
+     (still caught immediately by the detach broadcast); only the "attached but quiet" case gains
+     patience. The originally-intended 60s threshold is now actually enforced.
+   - Related findings (not changed this build): the precipitating event is the wireless CarPlay link
+     to the iPhone failing to re-establish (adapter scans, knows PeerBluetoothAddress, gets
+     DEVICE_NOT_FOUND); the USB permission wall compounds each re-enumeration; a display-mode change
+     mid-reconnect (DISPLAY_REINIT) can rebuild the manager. Candidate follow-ups if the spiral
+     persists: lengthen the 10s post-unplug autoConn grace; suppress spurious DISPLAY_REINIT during
+     reconnect.
+   - Affected: usb/UsbDeviceWrapper.kt.
