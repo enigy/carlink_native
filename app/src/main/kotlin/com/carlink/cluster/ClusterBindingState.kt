@@ -26,4 +26,15 @@ package com.carlink.cluster
 object ClusterBindingState {
     @Volatile
     var sessionAlive = false
+
+    /**
+     * `SystemClock.elapsedRealtime()` of the most recent successful `updateTrip()` relay
+     * (0 = none since process start). Written by the primary [ClusterMainSession] on every relay;
+     * read by CarlinkManager's [NAV_HEALTH] diagnostic as the nav-OUTPUT heartbeat (paired with
+     * [com.carlink.navigation.NavigationStateManager.lastNaviJsonElapsedMs], the nav-INPUT
+     * heartbeat). Together they localize a blank cluster: input fresh + output stale → relay/Host
+     * side; both stale → nav stopped arriving from the adapter.
+     */
+    @Volatile
+    var lastRelayElapsedMs: Long = 0L
 }

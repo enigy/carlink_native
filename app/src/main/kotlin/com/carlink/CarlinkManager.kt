@@ -3,12 +3,14 @@ package com.carlink
 import android.content.Context
 import android.hardware.usb.UsbManager
 import android.os.PowerManager
+import android.os.SystemClock
 import android.view.Surface
 import androidx.core.content.edit
 import com.carlink.BuildConfig
 import com.carlink.audio.DualStreamAudioManager
 import com.carlink.audio.MicrophoneCaptureManager
 import com.carlink.gnss.GnssForwarder
+import com.carlink.cluster.ClusterBindingState
 import com.carlink.logging.Logger
 import com.carlink.logging.logDebug
 import com.carlink.logging.logError
@@ -366,6 +368,11 @@ class CarlinkManager(
 
     // Video frame logging throttle — log every 30th frame to reduce logcat spam
     private var videoFrameCount = 0L
+
+    // [NAV_HEALTH] diagnostic throttle (elapsedRealtime ms of last emit). Emitted from the
+    // video-frame path so it only logs while CarPlay video is live — exactly the "CarPlay works
+    // but cluster blank" condition we need to characterize.
+    private var lastNavHealthLogMs = 0L
 
     // Callback
     private var callback: Callback? = null
@@ -3443,6 +3450,26 @@ class CarlinkManager(
 
                 if (++videoFrameCount % 30 == 0L) {
                     logVideoUsb { "processVideoDirect: frame=$videoFrameCount dataLength=$dataLength, pts=$sourcePtsMs" }
+                }
+
+                // [NAV_HEALTH] diagnostic — emitted once per 30s while video is live (CarPlay up).
+                // When the cluster is reportedly blank but CarPlay still navigates, these lines
+                // localize the break: navIn fresh + relayOut stale → relay/Host side (our updateTrip
+                // not landing); both stale → adapter stopped forwarding nav; sessionAlive=false →
+                // the Host tore the session down. Remove once the cluster-death cause is pinned.
+                val nowHealth = SystemClock.elapsedRealtime()
+                if (nowHealth - lastNavHealthLogMs >= 30_000L) {
+                    lastNavHealthLogMs = nowHealth
+                    val navIn = NavigationStateManager.lastNaviJsonElapsedMs
+                    val relayOut = ClusterBindingState.lastRelayElapsedMs
+                    logInfo(
+                        "[NAV_HEALTH] video=live " +
+                            "navInAgoMs=${if (navIn == 0L) -1 else nowHealth - navIn} " +
+                            "relayOutAgoMs=${if (relayOut == 0L) -1 else nowHealth - relayOut} " +
+                            "navActive=${NavigationStateManager.state.value.isActive} " +
+                            "clusterSessionAlive=${ClusterBindingState.sessionAlive}",
+                        tag = Logger.Tags.NAVI,
+                    )
                 }
 
                 // Parse encoder state from video header for touch flags (AutoKit compatibility).

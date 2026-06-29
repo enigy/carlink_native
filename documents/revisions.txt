@@ -1034,3 +1034,29 @@
    - Remaining: only #3 (gminfo37 USB-permission startup stall — platform wall).
    - Affected: media/MediaSessionManager.kt (remove probe), video/H264Renderer.java + audio/
      DualStreamAudioManager.kt (upstream CPU opt).
+
+[189] :: DIAGNOSTIC — [NAV_HEALTH] pulse to localize the periodic cluster/skip death (no behavior change).
+   - v188 field logs (06-26..06-28): the cluster relay path is provably healthy — updateTrip() never
+     failed (0), watchdog never needed to fire (0), and whenever the phone feeds turn-by-turn nav,
+     trips relay. Every nav-stop correlated with arrival or a connection drop/re-enumeration; could NOT
+     reproduce "phone navigating + connection stable + relay silent." So the perceived cluster death
+     tracks the adapter↔phone connection instability (see below), not our relay code. The one thing
+     the logs can't show is whether the Templates Host stopped RENDERING despite successful relays.
+   - This build adds a [NAV_HEALTH] line emitted once per 30s FROM THE VIDEO-FRAME PATH (so it only
+     logs while CarPlay video is live — exactly the "CarPlay works but cluster blank" condition):
+     navInAgoMs (last NaviJSON from adapter), relayOutAgoMs (last updateTrip), navActive,
+     clusterSessionAlive. On the next failure this localizes the break: navIn fresh + relayOut stale →
+     relay/Host side; both stale → adapter stopped forwarding nav; sessionAlive=false → Host tore the
+     session down. Logged via log()/logInfo (NAVI tag) so it lands in the uploaded FILE logs.
+   - Re-added the nav-output heartbeat (ClusterBindingState.lastRelayElapsedMs, written by
+     ClusterMainSession after updateTrip) and added a nav-input heartbeat
+     (NavigationStateManager.lastNaviJsonElapsedMs, set in onNaviJson) to feed the pulse.
+   - Findings on issue #2 (streaming dies / stuck loop, requires reset): a compounding reconnect spiral —
+     adapter wedges ("USB read timeout — adapter not responding", sometimes even after permission
+     granted), USB permission timeouts on every re-enumeration (platform wall), and phone-pairing
+     failures (Phase 13 negotiation_failed / DEVICE_NOT_FOUND). Worst case 2026-06-26: 27 min of looping
+     before STREAMING. Reset rebuilds the manager + re-opens USB but does NOT force a USB device reset,
+     so a wedged adapter needs multiple presses. Auto-recovery escalation (force resetDevice() after N
+     failures) is the candidate mitigation — to be designed next.
+   - No functional change. Affected: navigation/NavigationStateManager.kt, cluster/ClusterBindingState.kt,
+     cluster/ClusterMainSession.kt, CarlinkManager.kt.

@@ -1,6 +1,7 @@
 package com.carlink.cluster
 
 import android.content.Intent
+import android.os.SystemClock
 import androidx.car.app.CarContext
 import androidx.car.app.Screen
 import androidx.car.app.Session
@@ -292,6 +293,9 @@ class ClusterMainSession : Session() {
             try {
                 val trip = TripBuilder.buildTrip(state, carContext)
                 navManager.updateTrip(trip)
+                // Nav-output heartbeat for the [NAV_HEALTH] diagnostic. See
+                // [ClusterBindingState.lastRelayElapsedMs].
+                ClusterBindingState.lastRelayElapsedMs = SystemClock.elapsedRealtime()
                 logNavi {
                     "[CLUSTER_MAIN] Trip relayed: maneuver=${state.maneuverType}, " +
                         "dist=${state.remainDistance}m, road=${state.roadName}" +

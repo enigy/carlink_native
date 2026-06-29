@@ -93,6 +93,16 @@ object NavigationStateManager {
     /** Timestamp (elapsedRealtime) of the last maneuver-bearing message. */
     private var lastManeuverMs = 0L
 
+    /**
+     * `SystemClock.elapsedRealtime()` of the most recent NaviJSON received from the adapter
+     * (0 = none since process start). Read by CarlinkManager's [NAV_HEALTH] diagnostic to tell,
+     * when the cluster is reportedly blank while CarPlay still navigates, whether nav input is
+     * still arriving from the adapter (→ Host/relay-side problem) or has stopped (→ the adapter
+     * stopped forwarding nav, i.e. downstream of a connection drop).
+     */
+    @Volatile
+    var lastNaviJsonElapsedMs: Long = 0L
+
     // ─── Tier C v5 (timeline-driven cursor, Apple as verification) ───
     /** Cursor into ComposedIconStore.currentRoute(). Self-advances on physical crossing signals. */
     @Volatile
@@ -286,6 +296,8 @@ object NavigationStateManager {
             logNavi { "[NAVI] Empty NaviJSON payload received — ignoring" }
             return
         }
+        // Nav-input heartbeat for the [NAV_HEALTH] diagnostic (see field KDoc).
+        lastNaviJsonElapsedMs = SystemClock.elapsedRealtime()
 
         logNavi {
             "[NAVI] Received NaviJSON: keys=${payload.keys}, " +
