@@ -1121,3 +1121,22 @@
      Whichever maneuver's own distanceMeters the live countdown tracks is the one the text should match
      — one short drive picks the exact fix with zero guessing. logInfo(NAVI) → lands in FILE logs.
    - No behavior change. Affected: navigation/NavigationStateManager.kt.
+
+[193] :: Phone-call mic: explicitly enable AEC / NS / AGC on the capture session (echo + distant voice).
+   - Report: far end hears speaker→mic echo and a distant, low-level voice on phone calls. Investigation:
+     formats are matched (CarPlay call mic = VOICE_COMMUNICATION @16kHz wideband decodeType=5; downlink
+     plays via a USAGE_VOICE_COMMUNICATION AudioTrack) — NOT a codec/adapter/CarPlay mismatch. Root cause
+     is the absence of effective mic pre-processing: the code relied on the VOICE_COMMUNICATION source to
+     apply echo cancellation / noise suppression / gain IMPLICITLY, which its own KDoc flags as
+     HAL-dependent and unreliable on the gminfo37 Intel SST HAL, and NO AudioEffect was ever attached
+     (grep-confirmed). No AEC → the cabin mic re-sends the speaker's (far-end) audio back → far end hears
+     itself; no AGC → far-field cabin mic sounds distant.
+   - Fix (step 1): MicrophoneCaptureManager now explicitly creates + enables AcousticEchoCanceler,
+     NoiseSuppressor, and AutomaticGainControl on the AudioRecord audioSessionId, each guarded by
+     isAvailable() and every outcome logged ([MIC] AEC/NS/AGC attached|NOT available|...). Released with
+     the AudioRecord (stop / error-cleanup / start failure paths). Non-fatal — mic still captures if an
+     effect is unavailable. The logs now reveal exactly which effects the SST HAL provides.
+   - If the log shows AEC isAvailable()=false, the HAL has no hardware echo canceller and step 2 is
+     software AEC (WebRTC AECM) using our own downlink as the echo reference — larger follow-up.
+   - Note: AGC is the effect most likely to need disabling if it pumps road noise; easy to gate later.
+   - Affected: audio/MicrophoneCaptureManager.kt.

@@ -6,6 +6,9 @@ import android.content.pm.PackageManager
 import android.media.AudioFormat
 import android.media.AudioRecord
 import android.media.MediaRecorder
+import android.media.audiofx.AcousticEchoCanceler
+import android.media.audiofx.AutomaticGainControl
+import android.media.audiofx.NoiseSuppressor
 import android.os.Process
 import android.util.Log
 import androidx.core.content.ContextCompat
@@ -107,6 +110,12 @@ class MicrophoneCaptureManager(
     private var captureThread: MicCaptureThread? = null
     private val isRunning = AtomicBoolean(false)
 
+    // Platform voice pre-processing effects, attached explicitly to the capture session (see
+    // [attachVoiceEffects]). Held so they can be released with the AudioRecord.
+    private var echoCanceler: AcousticEchoCanceler? = null
+    private var noiseSuppressor: NoiseSuppressor? = null
+    private var gainControl: AutomaticGainControl? = null
+
     private var startTime: Long = 0
 
     // @Volatile: written by capture thread, read by main thread in getStats()/stop().
@@ -188,6 +197,11 @@ class MicrophoneCaptureManager(
                     return false
                 }
 
+                // Explicitly enable echo cancellation / noise suppression / gain control on the
+                // capture session. VOICE_COMMUNICATION alone did NOT reliably apply them on the GM
+                // Intel SST HAL (far end heard speaker→mic echo + a distant, low-level voice).
+                audioRecord?.audioSessionId?.let { attachVoiceEffects(it) }
+
                 micBuffer =
                     AudioRingBuffer(
                         capacityMs = bufferCapacityMs,
@@ -215,18 +229,21 @@ class MicrophoneCaptureManager(
                 // AudioRecord.release() is unconditionally safe per AOSP source.
                 // Without cleanup, the leaked AudioRecord holds the Intel SST HAL
                 // input stream, blocking all future mic capture (Siri/phone calls).
+                releaseVoiceEffects()
                 audioRecord?.release()
                 audioRecord = null
                 micBuffer = null
                 return false
             } catch (e: IllegalArgumentException) {
                 log("[MIC] ERROR: Invalid parameters: ${e.message}")
+                releaseVoiceEffects()
                 audioRecord?.release()
                 audioRecord = null
                 micBuffer = null
                 return false
             } catch (e: IllegalStateException) {
                 log("[MIC] ERROR: Invalid state: ${e.message}")
+                releaseVoiceEffects()
                 audioRecord?.release()
                 audioRecord = null
                 micBuffer = null
@@ -258,6 +275,9 @@ class MicrophoneCaptureManager(
             } catch (_: InterruptedException) {
             }
             captureThread = null
+
+            // Release the voice effects before the session they're attached to goes away.
+            releaseVoiceEffects()
 
             // audioRecord may already be null if capture thread released it on fatal error.
             // AudioRecord.release() is safe to call; null-check prevents NPE.
@@ -349,6 +369,80 @@ class MicrophoneCaptureManager(
     }
 
     /**
+     * Attach and enable the platform voice pre-processing effects on the capture [sessionId].
+     *
+     * Relying on the VOICE_COMMUNICATION audio source to apply these implicitly is not reliable on
+     * the gminfo37 Intel SST HAL, which surfaced as the far end hearing speaker→mic echo and a
+     * distant, low-level voice. Creating the effects explicitly is the standard Android approach;
+     * each is guarded by `isAvailable()` and every outcome is logged so the field logs reveal
+     * exactly which effects the HAL actually provides (AEC is the one that clears the echo; AGC
+     * lifts a far-field cabin mic and is also the one most likely to need disabling if it pumps
+     * road noise). All failures are non-fatal — the mic still captures without the effect.
+     */
+    private fun attachVoiceEffects(sessionId: Int) {
+        try {
+            if (AcousticEchoCanceler.isAvailable()) {
+                val aec = AcousticEchoCanceler.create(sessionId)
+                if (aec != null) {
+                    val status = aec.setEnabled(true)
+                    echoCanceler = aec
+                    log("[MIC] AEC attached: enabled=${aec.enabled} setEnabledStatus=$status")
+                } else {
+                    log("[MIC] AEC available but create() returned null")
+                }
+            } else {
+                log("[MIC] AEC NOT available on this HAL")
+            }
+        } catch (e: Exception) {
+            log("[MIC] AEC attach failed: ${e.message}")
+        }
+
+        try {
+            if (NoiseSuppressor.isAvailable()) {
+                val ns = NoiseSuppressor.create(sessionId)
+                if (ns != null) {
+                    val status = ns.setEnabled(true)
+                    noiseSuppressor = ns
+                    log("[MIC] NS attached: enabled=${ns.enabled} setEnabledStatus=$status")
+                } else {
+                    log("[MIC] NS available but create() returned null")
+                }
+            } else {
+                log("[MIC] NS NOT available on this HAL")
+            }
+        } catch (e: Exception) {
+            log("[MIC] NS attach failed: ${e.message}")
+        }
+
+        try {
+            if (AutomaticGainControl.isAvailable()) {
+                val agc = AutomaticGainControl.create(sessionId)
+                if (agc != null) {
+                    val status = agc.setEnabled(true)
+                    gainControl = agc
+                    log("[MIC] AGC attached: enabled=${agc.enabled} setEnabledStatus=$status")
+                } else {
+                    log("[MIC] AGC available but create() returned null")
+                }
+            } else {
+                log("[MIC] AGC NOT available on this HAL")
+            }
+        } catch (e: Exception) {
+            log("[MIC] AGC attach failed: ${e.message}")
+        }
+    }
+
+    /** Release the voice pre-processing effects. Safe to call when none were attached. */
+    private fun releaseVoiceEffects() {
+        try { echoCanceler?.release() } catch (e: Exception) { log("[MIC] AEC release: ${e.message}") }
+        try { noiseSuppressor?.release() } catch (e: Exception) { log("[MIC] NS release: ${e.message}") }
+        try { gainControl?.release() } catch (e: Exception) { log("[MIC] AGC release: ${e.message}") }
+        echoCanceler = null
+        noiseSuppressor = null
+        gainControl = null
+    }
+
+    /**
      * Release AudioRecord from capture thread after fatal read() error.
      *
      * Called WITHOUT holding [lock] to avoid deadlock (stop() holds lock during join()).
@@ -358,6 +452,7 @@ class MicrophoneCaptureManager(
      */
     private fun cleanupAfterCaptureError() {
         isRunning.set(false)
+        releaseVoiceEffects()
         try {
             audioRecord?.release()
         } catch (e: Exception) {
