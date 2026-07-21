@@ -108,6 +108,16 @@ object NavigationStateManager {
     @Volatile
     private var localCursor: Int = 0
 
+    /**
+     * [MANEUVER_ALIGN] diagnostic: last cursor we emitted an alignment line for. Investigating a
+     * reported "cluster text is one maneuver behind the distance" symptom — the line logs the
+     * road + parsed distanceMeters for maneuvers[cur] and maneuvers[cur+1] against the live
+     * NaviRemainDistance, so whichever maneuver's own distance tracks the live countdown identifies
+     * which one the displayed text should match. Fires only on cursor change to stay low-noise.
+     */
+    @Volatile
+    private var lastManeuverAlignCursor: Int = -1
+
     /** Reference identity of the last seen route; reset cursor on change. */
     @Volatile
     private var lastRouteRef: com.carlink.navigation.Iap2RouteData? = null
@@ -460,6 +470,21 @@ object NavigationStateManager {
                 "[NAVI] V6_FIRED cursor=$localCursor/${routeV6.maneuvers.size}, maneuver=${mergedV6.maneuverType}, " +
                     "road=${mergedV6.roadName}, remainDist=${mergedV6.remainDistance}m, " +
                     "next=${mergedV6.nextManeuverType}@${mergedV6.nextRoadName}"
+            }
+            // [MANEUVER_ALIGN] diagnostic — one line per cursor change (see field KDoc). Compare the
+            // live remainDist to cur.dMeters vs next.dMeters: whichever the countdown tracks is the
+            // maneuver the displayed text should describe (identifies a one-step text/distance drift).
+            if (localCursor != lastManeuverAlignCursor) {
+                lastManeuverAlignCursor = localCursor
+                val nextForAlign = routeV6.maneuvers.getOrNull(localCursor + 1)
+                logInfo(
+                    "[MANEUVER_ALIGN] liveRemain=${mergedV6.remainDistance}m | " +
+                        "cur[idx=$localCursor type=${routeStep.cpManeuverType} " +
+                        "road='${routeStep.postManeuverRoadName}' dMeters=${routeStep.distanceMeters}] | " +
+                        "next[idx=${localCursor + 1} type=${nextForAlign?.cpManeuverType} " +
+                        "road='${nextForAlign?.postManeuverRoadName}' dMeters=${nextForAlign?.distanceMeters}]",
+                    tag = Logger.Tags.NAVI,
+                )
             }
             _state.value = mergedV6
             (payload["NaviRemainDistance"] as? Number)?.toInt()?.let { lastDistance = it }

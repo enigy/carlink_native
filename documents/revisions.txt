@@ -1104,3 +1104,20 @@
      instead of blanking for minutes. Genuine drive-end still clears nav state via the USB-disconnect /
      flush-signal / unplug paths. Verified harmless on connect-time restarts (nav is already idle then).
    - Affected: MainActivity.kt (restartClusterBinding).
+
+[192] :: DIAGNOSTIC — [MANEUVER_ALIGN] to pin the "cluster text one maneuver behind" report (no change).
+   - Reported on v191: the nav-cluster distance to the next maneuver is correct, but the maneuver TEXT
+     is one step behind. Code trace: TripBuilder step 1 is internally consistent (maneuver+cue+distance
+     all from the same state fields); the current-step text is maneuvers[currentManeuverIdx]
+     (postManeuverRoadName = road you turn onto) while the distance is the live NaviRemainDistance. Per
+     the Iap2StateParser 0x000d comment (live-verified 2026-05-29) currentManeuverIdx element 0 IS the
+     approaching maneuver and 0x000a counts to 0 at that index — i.e. aligned by design. So a persistent
+     one-behind means the text index and the live distance have drifted apart by one (suspected
+     Carlinkit firmware change in how NaviRemainDistance maps vs Apple's maneuver-index list; adapter fw
+     2025.10.15). Likely long-standing but only newly VISIBLE because [191] stopped the cluster blanking.
+   - Not blind-fixing (+1 shift) because the alignment was verified correct once; a wrong shift makes it
+     one-AHEAD. Instead: [MANEUVER_ALIGN] logs one line per cursor change with the road + parsed
+     distanceMeters for maneuvers[cur] AND maneuvers[cur+1] against the live NaviRemainDistance.
+     Whichever maneuver's own distanceMeters the live countdown tracks is the one the text should match
+     — one short drive picks the exact fix with zero guessing. logInfo(NAVI) → lands in FILE logs.
+   - No behavior change. Affected: navigation/NavigationStateManager.kt.
