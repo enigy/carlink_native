@@ -1085,3 +1085,22 @@
      persists: lengthen the 10s post-unplug autoConn grace; suppress spurious DISPLAY_REINIT during
      reconnect.
    - Affected: usb/UsbDeviceWrapper.kt.
+
+[191] :: Fix the real cluster-blank cause — restartClusterBinding() was wiping the LIVE nav state.
+   - The [189] [NAV_HEALTH] pulse pinned it in the 2026-07-20 v190 log. Death window 15:55–16:01
+     (~6 min): navInAgoMs stayed FRESH (~500ms — the adapter kept forwarding nav the whole time),
+     but navActive was stuck FALSE and relayOutAgoMs climbed 25s→386s. So it was never the
+     connection or the Host rendering — our NavigationState.isActive got stuck false while real nav
+     data kept arriving.
+   - Mechanism: 15:54:47 the Templates Host tore the session down mid-drive (sessionAlive=false);
+     15:54:48 the watchdog correctly fired and called restartClusterBinding(); restartClusterBinding()
+     then called NavigationStateManager.clear() → navActive=false. The phone then sent only
+     distance-only frames (keys=[NaviRemainDistance], no NaviStatus), so navActive never returned to
+     true, and the freshly-rebuilt session relayed nothing until the next full status frame ~6 min
+     later. The watchdog was doing its job; the clear() sabotaged the recovery.
+   - Fix: restartClusterBinding() no longer touches NavigationStateManager. The nav state reflects the
+     phone's LIVE navigation and is independent of which cluster session holds the Host binding — the
+     new session now picks up the current active state and resumes relaying within a few seconds
+     instead of blanking for minutes. Genuine drive-end still clears nav state via the USB-disconnect /
+     flush-signal / unplug paths. Verified harmless on connect-time restarts (nav is already idle then).
+   - Affected: MainActivity.kt (restartClusterBinding).

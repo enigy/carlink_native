@@ -1146,7 +1146,17 @@ class MainActivity : ComponentActivity() {
 
     /**
      * Tears down the cluster binding chain and re-establishes it.
-     * Clears nav state → kills CarAppActivity task → waits for teardown → relaunches.
+     * Kills CarAppActivity task → waits for teardown → relaunches.
+     *
+     * Does NOT touch [NavigationStateManager]: the nav state reflects the phone's LIVE navigation
+     * and is independent of which cluster session holds the Host binding. Clearing it here (as an
+     * earlier version did) was a bug — when the watchdog re-establishes after a mid-drive Host
+     * teardown, clear() set navActive=false, and because the phone then sends only distance-only
+     * frames (no NaviStatus), navActive never returned to true, so the freshly-rebuilt session
+     * relayed nothing until the next full status frame minutes later (observed 2026-07-20:
+     * ~6 min blank cluster while nav data kept arriving, navInAgoMs≈500ms, navActive=false). The
+     * new session must instead pick up the current live nav state and resume relaying immediately.
+     * Genuine drive-end still clears nav state via the USB-disconnect / flush-signal / unplug paths.
      *
      * [ActivityManager.getAppTasks] returns only the calling package's tasks, so the
      * CarAppActivity match is guaranteed to be ours. `singleTask` on the manifest
@@ -1158,7 +1168,6 @@ class MainActivity : ComponentActivity() {
         // Stamp the watchdog cooldown so it doesn't pile a second restart on top of this one
         // while the fresh session is coming up (bind + first relay take a few seconds).
         lastClusterRelaunchElapsedMs = SystemClock.elapsedRealtime()
-        NavigationStateManager.clear()
         val am = getSystemService(ActivityManager::class.java)
         for (appTask in am.appTasks) {
             if (appTask.taskInfo.baseActivity?.className == "androidx.car.app.activity.CarAppActivity") {
