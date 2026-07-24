@@ -1140,3 +1140,27 @@
      software AEC (WebRTC AECM) using our own downlink as the echo reference — larger follow-up.
    - Note: AGC is the effect most likely to need disabling if it pumps road noise; easy to gate later.
    - Affected: audio/MicrophoneCaptureManager.kt.
+
+[194] :: Nav cluster text off-by-one fixed + HUD default ON + phone-call MODE_IN_COMMUNICATION (mic step 3).
+   - Nav one-behind (CONFIRMED via [192] MANEUVER_ALIGN + relayed data, 2026-07-23): the cluster showed
+     the road you're CURRENTLY on, not the turn you're approaching (e.g. "Madison Main NW" while 9 m from
+     turning onto "Collier Trace NW"), while the distance was correctly counting to that turn. The
+     imminent turn was already in state.nextManeuverType/nextRoadName and remainDistance was already the
+     distance to it. Fix: TripBuilder now builds the PRIMARY step from the imminent turn (next*) + its
+     composed icon, keeping remainDistance; falls back to the current maneuver only when there is no
+     upcoming turn (final leg). Deliberately does NOT shift state.maneuverType (ClusterMainSession arrival
+     detection keys on it — shifting would end nav a segment early). Active path confirmed: CarlinkClusterService
+     → ClusterMainSession → TripBuilder (CarlinkClusterSession is dead code).
+   - HUD default ON: clusterNavigationDefault now true everywhere (was OFF on real hardware, ON only on the
+     DEBUG emulator). Fresh installs get the cluster; an explicit prior user toggle is still honored.
+   - MIC step 3 (echo): step 1 [193] proved AEC/NS/AGC attach + enable but don't cancel — because the app
+     stayed in MODE_NORMAL, so the HAL's voice-comm echo path (which references the downlink) never runs.
+     BT-HFP reroute isn't possible (iOS keeps CarPlay call audio on the CarPlay/USB path). So: on
+     AUDIO_PHONECALL_START set AudioManager.mode = MODE_IN_COMMUNICATION; restore MODE_NORMAL on
+     AUDIO_PHONECALL_STOP and in all teardown paths (disconnect / rebootAdapter / handleError) via an
+     idempotent restoreNormalAudioMode() guarded by a setCommunicationMode flag, so we never leave the
+     device stuck in comm mode. Logs the resulting mode ([AUDIO_MODE]) since some HALs override it. Added
+     MODIFY_AUDIO_SETTINGS permission. On-vehicle caveat: comm mode can shift GM call routing/volume —
+     testable + reversible.
+   - Affected: navigation/TripBuilder.kt, ui/settings/AdapterConfigPreference.kt, CarlinkManager.kt,
+     AndroidManifest.xml.

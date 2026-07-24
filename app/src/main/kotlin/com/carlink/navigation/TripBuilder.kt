@@ -94,14 +94,38 @@ object TripBuilder {
         // same value because the adapter doesn't expose per-step timing. See class KDoc.
         val eta = ZonedDateTime.now().plus(Duration.ofSeconds(state.timeToDestination.toLong()))
 
-        // Current step
-        val maneuver = ManeuverMapper.buildManeuver(state, context)
+        // Primary step = the IMMINENT turn — the maneuver the driver is APPROACHING, not the road
+        // they are currently on. state.maneuverType/roadName describe the CURRENT segment; the turn
+        // being approached is in state.nextManeuverType/nextRoadName, and state.remainDistance is
+        // already the distance to it. Building the primary step from the current segment made the
+        // cluster's maneuver text (and icon) lag one maneuver behind the — correct — distance
+        // (log-confirmed 2026-07-23: cluster showed the current road "Madison Main NW" while the
+        // driver was 9 m from turning onto "Collier Trace NW"; the imminent turn was already in the
+        // nextRoadName field). We do NOT shift state.maneuverType itself — ClusterMainSession's
+        // arrival detection keys on it, and moving it would fire the arrival timeout a segment
+        // early. Fall back to the current maneuver only when there is no upcoming turn (final leg /
+        // malformed state), which preserves arrival rendering.
+        val hasImminentTurn = state.hasNextStep
+        val primaryType = if (hasImminentTurn) state.nextManeuverType!! else state.maneuverType
+        val primaryRoad = if (hasImminentTurn) state.nextRoadName else state.roadName
+        val primaryExitAngle = if (hasImminentTurn) state.nextExitAngle else state.exitAngle
+
+        val composedIcon =
+            com.carlink.navigation.compose.ComposedIconStore.lookup(primaryType, primaryRoad)
+        val maneuver =
+            ManeuverMapper.buildManeuverForType(
+                cpType = primaryType,
+                turnSide = state.turnSide,
+                context = context,
+                composedIcon = composedIcon,
+                exitAngle = primaryExitAngle,
+            )
         val stepBuilder = Step.Builder()
         stepBuilder.setManeuver(maneuver)
         composeCue(
-            state.maneuverType,
+            primaryType,
             state.turnSide,
-            state.roadName,
+            primaryRoad,
             state.remainDistance,
             directionCueEnabled,
             directionThresholdMeters,
@@ -116,36 +140,9 @@ object TripBuilder {
 
         tripBuilder.addStep(stepBuilder.build(), stepEstimate)
 
-        // Next step — from firmware double-maneuver burst
-        if (state.hasNextStep) {
-            val nextManeuver =
-                ManeuverMapper.buildManeuverForType(
-                    state.nextManeuverType!!,
-                    state.turnSide,
-                    context,
-                    exitAngle = state.nextExitAngle,
-                )
-            val nextStepBuilder = Step.Builder()
-            nextStepBuilder.setManeuver(nextManeuver)
-            // Next-step is the maneuver AFTER the imminent one — always farther than the
-            // 0.5 mi prefix window — so it shows the plain road name (no direction prefix).
-            state.nextRoadName?.let { nextStepBuilder.setCue(it) }
-
-            // No meaningful distance to the next-next maneuver — use destination estimate
-            // as a placeholder. The cluster primarily shows the current step's distance;
-            // the next step is a preview (icon + road name).
-            val nextStepEstimate =
-                TravelEstimate
-                    .Builder(
-                        DistanceFormatter.toDistance(state.distanceToDestination),
-                        eta,
-                    ).build()
-
-            tripBuilder.addStep(nextStepBuilder.build(), nextStepEstimate)
-
-            logNavi {
-                "[TRIP] Next step added: maneuver=${state.nextManeuverType}, road=${state.nextRoadName}"
-            }
+        logNavi {
+            "[TRIP] Primary step (imminent turn): maneuver=$primaryType, road=$primaryRoad, " +
+                "dist=${state.remainDistance}m fallbackToCurrent=${!hasImminentTurn}"
         }
 
         if (state.destinationName != null || state.distanceToDestination > 0) {

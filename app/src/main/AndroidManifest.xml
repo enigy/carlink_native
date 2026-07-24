@@ -4,6 +4,9 @@
 
     <!-- Permissions -->
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <!-- setMode(MODE_IN_COMMUNICATION) during phone calls to engage the platform voice-comm audio
+         path (hardware AEC references the downlink there). Normal install-time permission. -->
+    <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />

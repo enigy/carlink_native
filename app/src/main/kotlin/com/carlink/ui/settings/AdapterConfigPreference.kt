@@ -746,23 +746,20 @@ class AdapterConfigPreference private constructor(
     }
 
     /**
-     * Default for the Cluster Integration toggle when the user has NOT made an explicit choice.
+     * Default for the Cluster Integration (HUD navigation) toggle when the user has NOT made an
+     * explicit choice.
      *
-     * Dev convenience that mirrors the AltVideo/NavVideo gate (CarlinkManager "[NAVI_GATE]":
-     * BuildConfig.DEBUG && isAaosEmulator()): on a DEBUG APK running on the
-     * AAOS emulator, Cluster Integration defaults ON so the Templates Host binding is exercised
-     * without re-toggling it after every reinstall (a fresh install wipes the persisted
-     * component-enable state). Production APKs and all real hardware default OFF — cluster
-     * integration there stays an explicit user opt-in.
+     * Now defaults ON everywhere — the HUD turn-by-turn cluster is a headline feature and should
+     * work out of the box on a fresh install. (Previously it defaulted OFF on real hardware and ON
+     * only on the DEBUG AAOS emulator; changed by user request once the cluster path was stable.)
      *
-     * An explicit user choice in EITHER direction is always honored over this default, because
-     * the DataStore key / sync-cache key is only present once a setter has run (no init-time
-     * re-sync writes it). Cached with `lazy` because getClusterNavigationSync() is hot (called
-     * per-NaviJSON on the USB read thread) and platform/build-type never change at runtime.
+     * An explicit user choice in EITHER direction is always honored over this default, because the
+     * DataStore key / sync-cache key is only present once a setter has run (no init-time re-sync
+     * writes it) — so anyone who has already turned it off keeps it off. Kept as a `by lazy` val
+     * (rather than a plain constant) so the hot getClusterNavigationSync() path — called per-
+     * NaviJSON on the USB read thread — has the same shape it always did.
      */
-    private val clusterNavigationDefault: Boolean by lazy {
-        BuildConfig.DEBUG && PlatformDetector.detect(appContext).isAaosEmulator()
-    }
+    private val clusterNavigationDefault: Boolean by lazy { true }
 
     val clusterNavigationFlow: Flow<Boolean> =
         dataStore.data.map { preferences ->
