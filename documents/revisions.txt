@@ -1164,3 +1164,19 @@
      testable + reversible.
    - Affected: navigation/TripBuilder.kt, ui/settings/AdapterConfigPreference.kt, CarlinkManager.kt,
      AndroidManifest.xml.
+
+[195] :: Revert [194]'s nav-cluster maneuver promotion — it pushed the HUD text one turn AHEAD.
+   - On-truck [194] result: HUD turn text was consistently ONE turn AHEAD (showed the turn after the
+     upcoming one). Re-analysis with the [192] MANEUVER_ALIGN + parsed distanceMeters (v194 logs
+     2026-07-24) shows the earlier "one behind" diagnosis was a field-semantics misread: at every fresh
+     segment the live NaviRemainDistance tracks maneuvers[currentManeuverIdx].distanceMeters (NOT the
+     next maneuver's), and Iap2StateParser documents currentManeuverIdx element 0 as "the maneuver
+     being approached now". maneuvers[cur].postManeuverRoadName is the road you turn ONTO at that
+     approaching maneuver — i.e. cur IS the correct upcoming turn; state.next* is the maneuver AFTER it.
+     Depart sequence confirms (cur=Collier Trace while next=Madison Main, driver approaching Collier).
+   - Fix: TripBuilder reverted to the primary step = state.maneuverType/roadName (the approaching
+     maneuver, via ManeuverMapper.buildManeuver) with state.remainDistance; state.next* restored as the
+     look-ahead preview step. [192] MANEUVER_ALIGN diagnostic kept in place to verify + catch any
+     residual compound/duplicate-maneuver lag.
+   - Unchanged from [194]: HUD default ON, and the phone-call MODE_IN_COMMUNICATION mic path.
+   - Affected: navigation/TripBuilder.kt.
