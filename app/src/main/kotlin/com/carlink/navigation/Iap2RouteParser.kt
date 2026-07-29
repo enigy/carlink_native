@@ -1,8 +1,10 @@
 package com.carlink.navigation
 
 import com.carlink.logging.Logger
+import com.carlink.logging.logInfo
 import com.carlink.logging.logNavi
 import com.carlink.logging.logWarn
+import java.util.concurrent.ConcurrentHashMap
 
 /**
  * Parses an `_iap2m` hex string from a NaviJSON message into a structured [Iap2RouteData].
@@ -40,6 +42,30 @@ object Iap2RouteParser {
     private const val FIELD_FLAG_9 = 0x0009
     private const val FIELD_JUNCTION_ANGLE = 0x000a
     private const val FIELD_EXIT_ANGLE = 0x000b
+
+    /**
+     * cpManeuverType for `rampOff` — a highway/interstate exit. See ManeuverMapper's `8 ->` branch.
+     *
+     * [198] diagnostic: we want the cluster cue to read "Take exit 273" instead of the hardcoded
+     * "Take the exit", but the exit NUMBER is absent from everything we currently decode. Across
+     * every captured drive, cpType-8 maneuvers carried only destination text in instructionText —
+     * "41 and Northside Dr", "92 to Woodstock", "Wade Green Road", "US-41" — all real numbered
+     * exits (Wade Green Rd is I-75 exit 273, "92 to Woodstock" is I-575 exit 7) with no number.
+     *
+     * That is NOT proof the number is off the wire: this parser decodes 0x0002-0x000b and silently
+     * skips everything else, and the unknown-field log below is logNavi = debug-only, so release
+     * builds have never shown us an unrecognized TLV. [dumpRampTlvs] closes that blind spot.
+     */
+    private const val CP_TYPE_RAMP_OFF = 8
+
+    /** Cap the per-field hex in [dumpRampTlvs] so a long string field can't produce a huge line. */
+    private const val MAX_DUMP_BYTES = 48
+
+    /**
+     * Field IDs already reported by [logUnknownFieldOnce], so an unrecognized TLV appearing on
+     * every maneuver of every route update logs once per process instead of thousands of times.
+     */
+    private val reportedUnknownFields = ConcurrentHashMap.newKeySet<Int>()
 
     /**
      * Parse a hex string (lowercase or upper, no separators) representing one or more
@@ -150,6 +176,12 @@ object Iap2RouteParser {
         val entryAngles = mutableListOf<Int>()
         var exitAngle: Int? = null
 
+        // [198] Every TLV's (fieldId, valueStart, valueEnd), recorded as offsets into `bytes` —
+        // no copying, so this costs nothing on the maneuvers we don't dump. cpManeuverType can
+        // arrive at any position in the walk, so we can't decide "is this a ramp?" until the walk
+        // finishes; hence collect-then-decide rather than dumping inline. See [dumpRampTlvs].
+        val rawTlvs = mutableListOf<Triple<Int, Int, Int>>()
+
         var p = kvpStart
         while (p + 4 <= kvpEnd) {
             val tlvLen = bytes.u16BE(p)
@@ -162,6 +194,8 @@ object Iap2RouteParser {
             val valueStart = p + 4
             val valueEnd = p + tlvLen
             val valueLen = valueEnd - valueStart
+
+            rawTlvs.add(Triple(fieldId, valueStart, valueEnd))
 
             when (fieldId) {
                 FIELD_INSTRUCTION_TEXT -> instructionText = readNulString(bytes, valueStart, valueEnd)
@@ -179,10 +213,16 @@ object Iap2RouteParser {
                         "[NAVI_PARSER] Unknown field 0x${fieldId.toString(16).padStart(4, '0')} " +
                             "len=$valueLen in maneuver index=$index cpType=$cpManeuverType — skipping"
                     }
+                    // [198] The logNavi above is debug-only, so release builds — the ones actually
+                    // driven — have never surfaced an unrecognized TLV. Report each new field id
+                    // once at INFO so a field carrying, say, the exit number can't hide.
+                    logUnknownFieldOnce(bytes, fieldId, valueStart, valueEnd)
                 }
             }
             p = valueEnd
         }
+
+        if (cpManeuverType == CP_TYPE_RAMP_OFF) dumpRampTlvs(bytes, index, instructionText, rawTlvs)
 
         return Iap2ManeuverData(
             index = index,
@@ -197,6 +237,81 @@ object Iap2RouteParser {
             entryAngles = entryAngles.toList(),
             exitAngle = exitAngle,
         ) to frameTotal
+    }
+
+    /**
+     * [198] Dump every TLV of a highway-exit maneuver so we can find out whether the exit NUMBER
+     * is on the wire at all.
+     *
+     * Emitted at INFO (not logNavi) because it has to be visible in the release builds that
+     * actually get driven. Fires only for cpType 8, which is a handful of maneuvers per route,
+     * and only when a route arrives — not on the per-second guidance updates.
+     *
+     * Reading the output: each entry is `0xFFFF[len]=hex('ascii')`. Known fields 0x0002-0x000b are
+     * there for context; anything OUTSIDE that range is the interesting part. A short numeric field
+     * (1-2 bytes) or a string like "273" next to an unfamiliar id is the exit number we need. If
+     * every ramp dumps only 0x0002-0x000b, Apple isn't sending it and the cue can't state it.
+     */
+    private fun dumpRampTlvs(
+        bytes: ByteArray,
+        index: Int,
+        instructionText: String,
+        tlvs: List<Triple<Int, Int, Int>>,
+    ) {
+        val rendered =
+            tlvs.joinToString(" | ") { (fieldId, start, end) ->
+                "0x${fieldId.toString(16).padStart(4, '0')}[${end - start}]=" +
+                    hexPreview(bytes, start, end) + (printableOrNull(bytes, start, end)?.let { "('$it')" } ?: "")
+            }
+        logInfo(
+            "[RAMP_TLV] idx=$index instruction='$instructionText' fields=${tlvs.size} :: $rendered",
+            tag = Logger.Tags.NAVI,
+        )
+    }
+
+    /** Report an unrecognized field id once per process, with enough bytes to identify it. */
+    private fun logUnknownFieldOnce(
+        bytes: ByteArray,
+        fieldId: Int,
+        valueStart: Int,
+        valueEnd: Int,
+    ) {
+        if (!reportedUnknownFields.add(fieldId)) return
+        logInfo(
+            "[NAVI_TLV_NEW] Unrecognized iAP2 maneuver field " +
+                "0x${fieldId.toString(16).padStart(4, '0')} len=${valueEnd - valueStart} " +
+                "value=${hexPreview(bytes, valueStart, valueEnd)}" +
+                (printableOrNull(bytes, valueStart, valueEnd)?.let { " ('$it')" } ?: "") +
+                " — not decoded (first occurrence only)",
+            tag = Logger.Tags.NAVI,
+        )
+    }
+
+    /** Hex of the value, truncated to [MAX_DUMP_BYTES] with a trailing marker when clipped. */
+    private fun hexPreview(
+        bytes: ByteArray,
+        start: Int,
+        end: Int,
+    ): String {
+        val stop = minOf(end, start + MAX_DUMP_BYTES)
+        val sb = StringBuilder((stop - start) * 2 + 1)
+        for (i in start until stop) sb.append("%02x".format(bytes[i].toInt() and 0xFF))
+        if (stop < end) sb.append('…')
+        return sb.toString()
+    }
+
+    /**
+     * The value as text, or null when it doesn't look like a string. Binary fields (angles, flags,
+     * distances) would otherwise render as control-character noise and bury the readable ones.
+     */
+    private fun printableOrNull(
+        bytes: ByteArray,
+        start: Int,
+        end: Int,
+    ): String? {
+        val text = readNulString(bytes, start, end)
+        if (text.isEmpty()) return null
+        return text.takeIf { candidate -> candidate.all { it.code in 32..126 } }
     }
 
     /** Read a UTF-8 string with optional trailing NUL stripped. */

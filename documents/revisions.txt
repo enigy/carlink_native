@@ -1246,3 +1246,32 @@
      from each AudioEffect, on/OFF/none/dead).
    - Behavior unchanged — logging only. Remove once the echo cause is pinned.
    - Affected: CarlinkManager.kt, audio/MicrophoneCaptureManager.kt.
+
+[198] :: [RAMP_TLV] + [NAVI_TLV_NEW] diagnostics — and the finding that Apple does NOT send the exit number.
+   - Goal: make the cluster cue read "Take exit 273" instead of the hardcoded "Take the exit"
+     (ManeuverMapper.directionText, cpType 8 / rampOff). The cue is the only vehicle — the Car App
+     Library has no exit-number field for ramps (setRoundaboutExitNumber is roundabout-only).
+   - FINDING (decoded the raw _iap2m hex already present in the eight captured logs, rather than
+     waiting for a drive): the exit number is not transmitted. Across 296 maneuvers spanning all
+     logs, Apple emits EXACTLY field IDs 0x0002-0x000b and nothing else — every one already decoded
+     by Iap2RouteParser. There is no unparsed TLV and therefore no hidden exit-number field.
+     The two cpType-8 ramps captured carry only:
+       idx=13 instruction='92 to Woodstock' postRoad='SR-92'      (I-575 exit 7   — no "7")
+       idx=10 instruction='Wade Green Road' postRoad='Wade Green Road' (I-75 exit 273 — no "273")
+     fields 0x0002,0x0003,0x0004,0x0005,0x0006,0x0007,0x0008,0x0009 (no 0x000a/0x000b on ramps).
+     0x0006 is the distance display ('2.6', '10'), 0x0008/0x0009 are 0. Nothing numeric that could
+     be an exit number. So "Take exit 123" cannot be built from this protocol as it stands.
+   - Caveat on sample size: only 2 ramp maneuvers were captured, hence the diagnostics below rather
+     than closing the question outright. The 296-maneuver field-ID census is the stronger evidence —
+     Apple's ManeuverList message simply has ten fields and none is an exit number.
+   - Added (logging only, INFO so release builds show it — the old unknown-field log was logNavi =
+     logDebugOnly, so the release builds actually being driven had NEVER surfaced an unrecognized
+     TLV, which is why this blind spot existed):
+     * [RAMP_TLV] — full TLV dump (field id, length, hex, ASCII when printable) for every cpType 8
+       maneuver, emitted once per route update, not per guidance tick.
+     * [NAVI_TLV_NEW] — reports each unrecognized field id once per process, so any field Apple
+       starts sending on a route we haven't driven can't hide.
+   - Collect-then-decide in parseManeuver: cpManeuverType (0x0003) can appear at any position in the
+     TLV walk, so the raw (fieldId, valueStart, valueEnd) offsets are recorded during the walk — no
+     byte copying — and the dump decision is made after it completes.
+   - Affected: navigation/Iap2RouteParser.kt.
