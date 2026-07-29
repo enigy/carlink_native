@@ -7,6 +7,7 @@ import android.media.AudioFormat
 import android.media.AudioRecord
 import android.media.MediaRecorder
 import android.media.audiofx.AcousticEchoCanceler
+import android.media.audiofx.AudioEffect
 import android.media.audiofx.AutomaticGainControl
 import android.media.audiofx.NoiseSuppressor
 import android.os.Process
@@ -340,6 +341,32 @@ class MicrophoneCaptureManager(
             audioRecord?.recordingState == AudioRecord.RECORDSTATE_RECORDING
 
     fun bufferLevelMs(): Int = micBuffer?.fillLevelMs() ?: 0
+
+    /**
+     * Live enabled-state of the attached voice effects, for the in-call diagnostic pulse
+     * (see CarlinkManager's [CALL_AUDIO] watch).
+     *
+     * Read fresh from each AudioEffect rather than reported from the attach-time result: the
+     * framework can disable an effect AFTER we enable it (audio-policy change, another session
+     * claiming the HAL voice path, a mode transition). [193] logged only the attach-time status —
+     * "enabled=true" — and that told us nothing about whether the effect was still running when
+     * the far end heard echo. A silent flip to OFF mid-call looks exactly like a canceller that
+     * "doesn't work", so it must be sampled live.
+     */
+    fun voiceEffectStates(): String =
+        "aec=${effectState(echoCanceler)} ns=${effectState(noiseSuppressor)} agc=${effectState(gainControl)}"
+
+    private fun effectState(effect: AudioEffect?): String =
+        if (effect == null) {
+            "none"
+        } else {
+            try {
+                if (effect.enabled) "on" else "OFF"
+            } catch (e: IllegalStateException) {
+                // Effect released or its underlying engine is gone.
+                "dead"
+            }
+        }
 
     fun getStats(): Map<String, Any> {
         synchronized(lock) {

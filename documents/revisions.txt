@@ -1218,3 +1218,31 @@
      cur.dMeters at every fresh segment (1357/1287, 354/321, 2137/2092, 7754/7724, 1509/1448), confirming
      the [195] revert is correct.
    - Affected: usb/UsbDeviceWrapper.kt, CarlinkManager.kt.
+
+[197] :: [CALL_AUDIO] in-call diagnostic — make the next phone call decisive on the echo issue.
+   - Why: every echo "fix" so far is unverified. Checked all eight captured logs (v190 → v195): not one
+     contains a phone call. Every single one shows [CALL_STATUS] idle and voiceMode: NONE, zero
+     [AUDIO_MODE] lines, zero [MIC] AEC/NS/AGC lines. So [193] (attach AEC/NS/AGC) and [195]
+     (MODE_IN_COMMUNICATION) have never been observed executing — we do not know whether they failed or
+     never ran. Both were reasoned from source, not measured. No further blind fix until a call is logged.
+   - Verified topology (from source, not guessed): with audioTransferMode=adapter (the user's setting,
+     AUDIO_TRANSFER_OFF / UseBoxTransAudio) the far-end voice does NOT bypass the app — it arrives over
+     USB as data and the app plays it on its own AudioTrack (AUDIO_PERF shows Play:5625KB Route:MEDIAx500,
+     with a dedicated PHON: slot and stopPhoneCallTrack()). Mic is AudioRecord(VOICE_COMMUNICATION, 16000,
+     MONO) — decodeType 5 / SIRI_VOICE, which MicFormats documents as the CarPlay call path. The app
+     therefore holds BOTH signals in-process, so a software canceller is viable independent of whatever
+     the Intel SST HAL uses as its AEC reference. That stays the fallback, not the first move.
+   - Diagnostic gap this closes: [AUDIO_MODE] logs am.mode only at the instant we set it. GM's audio HAL
+     can revert it once the call's audio focus settles — which would look exactly like
+     "MODE_IN_COMMUNICATION changed nothing". Likewise [193] logged the attach-time effect status
+     ("enabled=true") and nothing about whether the effect was still enabled when the far end heard echo;
+     the framework can disable an effect after we enable it (policy change, another session claiming the
+     HAL voice path, a mode transition).
+   - Added: [CALL_AUDIO] pulse every 5s while isPhoneCallAudioActive, emitted from the existing
+     processVideoDirect path (CarPlay keeps sending video during a call, so it needs no timer of its own).
+     Logs live am.mode (3 = MODE_IN_COMMUNICATION; anything else with weSet=true means the platform took
+     it back), the setCommunicationMode flag, mic capturing state / decodeType / buffer level, and the
+     LIVE enabled-state of AEC/NS/AGC via new MicrophoneCaptureManager.voiceEffectStates() (sampled fresh
+     from each AudioEffect, on/OFF/none/dead).
+   - Behavior unchanged — logging only. Remove once the echo cause is pinned.
+   - Affected: CarlinkManager.kt, audio/MicrophoneCaptureManager.kt.

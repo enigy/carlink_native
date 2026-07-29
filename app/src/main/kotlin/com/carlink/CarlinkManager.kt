@@ -375,6 +375,12 @@ class CarlinkManager(
     // but cluster blank" condition we need to characterize.
     private var lastNavHealthLogMs = 0L
 
+    // [CALL_AUDIO] diagnostic throttle (elapsedRealtime ms of last emit). Emitted from the same
+    // video-frame path, but only while a call is up — CarPlay keeps sending video during a call,
+    // so this needs no timer of its own. 5s (not 30s) because calls are short and we need enough
+    // samples to see a mid-call flip.
+    private var lastCallAudioLogMs = 0L
+
     // Callback
     private var callback: Callback? = null
 
@@ -3533,6 +3539,33 @@ class CarlinkManager(
                             "clusterSessionAlive=${ClusterBindingState.sessionAlive}",
                         tag = Logger.Tags.NAVI,
                     )
+                }
+
+                // [CALL_AUDIO] diagnostic — emitted every 5s while a phone call is up.
+                //
+                // The echo fixes so far ([193] AEC/NS/AGC attach, [195] MODE_IN_COMMUNICATION) have
+                // NEVER been observed running: no log captured through v195 contains a single call
+                // (every one shows CALL_STATUS idle / voiceMode NONE), so we do not know whether
+                // they failed or never took effect. Both were reasoned from source, not measured.
+                //
+                // This closes the gap. [AUDIO_MODE] only reports the mode at the instant we set it;
+                // GM's audio HAL can revert it once the call's focus settles, which would look
+                // exactly like "MODE_IN_COMMUNICATION changed nothing". mode=3 is
+                // MODE_IN_COMMUNICATION; anything else while weSet=true means the platform took it
+                // back. Effect states are sampled live for the same reason (see
+                // MicrophoneCaptureManager.voiceEffectStates). Remove once the echo cause is pinned.
+                if (isPhoneCallAudioActive) {
+                    val nowCall = SystemClock.elapsedRealtime()
+                    if (nowCall - lastCallAudioLogMs >= 5_000L) {
+                        lastCallAudioLogMs = nowCall
+                        val mic = microphoneManager
+                        logInfo(
+                            "[CALL_AUDIO] mode=${platformAudioManager?.mode} weSet=$setCommunicationMode " +
+                                "micCapturing=${mic?.isCapturing()} micDecodeType=${mic?.getCurrentDecodeType()} " +
+                                "micBufMs=${mic?.bufferLevelMs()} ${mic?.voiceEffectStates()}",
+                            tag = Logger.Tags.MIC,
+                        )
+                    }
                 }
 
                 // Parse encoder state from video header for touch flags (AutoKit compatibility).
