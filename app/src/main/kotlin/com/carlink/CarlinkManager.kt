@@ -1023,7 +1023,18 @@ class CarlinkManager(
         if (!device.openWithPermission()) {
             logError("Failed to open USB device", tag = Logger.Tags.USB)
             setState(State.DISCONNECTED)
-            setStatusText("USB permission denied")
+            // Don't cry "denied" when the dialog is still sitting there unanswered — that reads
+            // as a dead end and is what sends the user to the Reset button, which re-enumerates
+            // the adapter and destroys the very dialog they need to tap (2026-07-28 log: 55
+            // minutes lost this way). Since [196] the dialog survives our wait expiring, so the
+            // honest prompt is to keep pointing at it.
+            setStatusText(
+                if (UsbDeviceWrapper.isPermissionDialogShowing) {
+                    "Waiting for USB access — tap “Allow” on the dialog"
+                } else {
+                    "USB permission denied"
+                },
+            )
             return
         }
 

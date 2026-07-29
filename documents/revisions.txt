@@ -1180,3 +1180,41 @@
      residual compound/duplicate-maneuver lag.
    - Unchanged from [194]: HUD default ON, and the phone-call MODE_IN_COMMUNICATION mic path.
    - Affected: navigation/TripBuilder.kt.
+
+[196] :: One USB permission dialog per device instance — stop churning the prompt the user is trying to tap.
+   - Symptom (2026-07-28 log, v195): cluster turn-by-turn never appeared for 55 minutes across two
+     ignition cycles; only came up "after multiple resets". Not a cluster/nav fault — the adapter was
+     never opened. Ten permission requests 17:14:06 → 18:09:26; SEVEN hit the 60s timeout, three ended in
+     a late denial, one grant. Requests 5-9 were five consecutive 60s timeouts against the SAME device
+     instance (/dev/bus/usb/001/029, attached the whole time). 43 min of that window was a hard process
+     freeze (ignition off — no onStop, no Display OFF, even the 30s AUDIO_PERF heartbeat stopped), so it
+     was ~12 min of live attempts. Once granted: device open in 5ms, cluster session in 9s, first Trip
+     relayed at 18:10:59, then 43 consecutive NAV_HEALTH pulses navActive=true clusterSessionAlive=true
+     with zero watchdog fires for 21 min to arrival. Next drive (19:39) granted in 8.3s — so the dialog is
+     normally visible; this window was an outlier, not a regression.
+   - Cause: requestPermission() fired a fresh UsbManager.requestPermission() on EVERY reconnect attempt.
+     Our withTimeoutOrNull gave up after 60s but nothing dismissed the system dialog, and 30s later the
+     loop raised another one — a new dialog every ~90s, i.e. a moving target. Compounding it: each Reset
+     press re-enumerates the CPC200 (017 → 023 → 029, six enumerations per press), which destroys the
+     pending dialog — both observed "permission denied" lines land at the exact moment of a USB_DETACH.
+     So pressing Reset actively made recovery harder.
+   - Fix: process-global PendingPermissionRequest, one slot keyed on the device instance path.
+     * First caller arms the dialog; later callers for the same instance await THAT dialog and never
+       raise a second one. A wait expiring no longer tears the dialog down — it stays on screen and the
+       next attempt re-attaches to it.
+     * Cancellation is driven by the DEVICE, not a clock: an ACTION_USB_DEVICE_DETACHED matching the
+       instance resolves the wait immediately (Reset press / ignition off / adapter self-reset), and a
+       re-enumeration disposes the stale dialog before arming the new one.
+     * Listeners now live on the request, not the requesting coroutine. Removes the old 15s
+       post-cancellation grace and its blind spot (a denial landing later was never observed OR logged).
+       A late grant with no attempt waiting still fires onLatePermissionGrant, tracked by a waiter count
+       (the deferred stays pending when a waiter times out, so its state can't answer that question).
+     * Per-caller wait 60s → 180s (PERMISSION_WAIT_MS): with one-dialog-per-instance a timeout no longer
+       costs the user their dialog, so waiting longer is free and stops pointless state-machine cycling.
+   - Also: the failure status text no longer says "USB permission denied" while the dialog is still up
+     (UsbDeviceWrapper.isPermissionDialogShowing) — that false dead-end is what sends the user to the
+     Reset button in the first place. Now "Waiting for USB access — tap "Allow" on the dialog".
+   - Unrelated confirmation from the same log: the 13 MANEUVER_ALIGN lines show liveRemain tracking
+     cur.dMeters at every fresh segment (1357/1287, 354/321, 2137/2092, 7754/7724, 1509/1448), confirming
+     the [195] revert is correct.
+   - Affected: usb/UsbDeviceWrapper.kt, CarlinkManager.kt.
