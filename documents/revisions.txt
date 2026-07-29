@@ -1275,3 +1275,29 @@
      TLV walk, so the raw (fieldId, valueStart, valueEnd) offsets are recorded during the walk — no
      byte copying — and the dump decision is made after it completes.
    - Affected: navigation/Iap2RouteParser.kt.
+
+[199] :: Close the second nav-parser blind spot — and correct [198]'s overconfident exit-number conclusion.
+   - CORRECTION to [198]: "Apple does not send the exit number" was not supportable. The claim rested
+     on 2-3 captured ramps, and the wire format demonstrably OMITS fields it has no value for. Proof
+     from our own captures, field presence per cpType in the 0x5202 ManeuverList:
+       cpType 1  n=65  junction geometry 0x000a/0x000b present on only 56
+       cpType 2  n=97  present on only 78
+       cpType 49 n=14  present on only 6
+       cpTypes 3,4,8,11,12,13,14,18,24,25 — absent entirely
+     Same story in 0x5201: Iap2StateParser knows fields 0x0015-0x001a (timezone, stop type, EV
+     battery) that appear in ZERO captured messages because this vehicle/route never populates them.
+     So absence across three metro-Atlanta ramps says nothing about a ramp where CarPlay does show a
+     number. The correct statement is "we have not captured it", not "it is not sent".
+   - What IS established (unchanged, and verified byte-complete): the logger truncates nothing —
+     14,491 payloads reassemble to exactly their declared length, 0 mismatches. The idx=13 ramp frame
+     accounts for 84 of 84 declared bytes across fields 0x0000-0x0009 with no gap. The 0x5201 census
+     covers 14,455 messages / 21 field ids. NaviRoundaboutExit exists but fired twice, both on
+     ManeuverType=29 (roundabout), never on a ramp. Nothing found — but nothing ruled out.
+   - Gap closed here: Iap2StateParser had NO else branch on its field `when` — an unrecognized field
+     was dropped silently in every build, across ~14,500 RouteGuidanceUpdate messages per drive. That
+     is the higher-volume of the two nav messages and was the larger blind spot; [198] only
+     instrumented the 0x5202 side (55 messages per drive). Added reportUnknownFieldOnce → the same
+     [NAVI_TLV_NEW] line, once per field id per process, at INFO so release builds show it.
+   - Net instrumentation after [198]+[199]: any unrecognized field in EITHER nav message announces
+     itself once, and every TLV of every ramp maneuver is dumped ([RAMP_TLV]).
+   - Affected: navigation/Iap2StateParser.kt.

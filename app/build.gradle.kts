@@ -32,7 +32,7 @@ android {
         applicationId = ownerApplicationId
         minSdk = 29
         targetSdk = 36
-        versionCode = 198
+        versionCode = 199
         versionName = "1.0.0"
 
 //###############################################

@@ -1,5 +1,8 @@
 package com.carlink.navigation
 
+import com.carlink.logging.Logger
+import com.carlink.logging.logInfo
+
 /**
  * Parsed per-tick state from iAP2 0x5201 RouteGuidanceUpdate.
  *
@@ -83,6 +86,9 @@ data class Iap2RouteGuidanceState(
 )
 
 object Iap2StateParser {
+    /** Field ids already announced by [reportUnknownFieldOnce] — one line per id per process. */
+    private val reportedUnknownFields = java.util.concurrent.ConcurrentHashMap.newKeySet<Int>()
+
     /**
      * Parse an `_iap2` hex string (a single 0x5201 frame).
      *
@@ -171,6 +177,7 @@ object Iap2StateParser {
                 0x001a -> if (valLen == 1) finalWpBatteryPct = b[valStart].toInt() and 0xFF
                 // 0x0013 SourceName, 0x0017 ChargingStationInfoList intentionally not parsed
                 // (already mirrored in NaviAPPName / not yet needed; the list is a nested group).
+                else -> reportUnknownFieldOnce(b, fieldId, valStart, valLen)
             }
             i += entryLen
         }
@@ -206,6 +213,41 @@ object Iap2StateParser {
             arrivalBatteryLevelPercent = arrivalBatteryPct,
             departureBatteryLevelPercent = departureBatteryPct,
             finalWaypointBatteryLevelPercent = finalWpBatteryPct,
+        )
+    }
+
+    /**
+     * Report an unrecognized 0x5201 field id once per process.
+     *
+     * [199] Until now this parser had NO else branch at all — an unknown field was dropped
+     * silently, in every build, across ~14,500 RouteGuidanceUpdate messages per drive. That is
+     * the higher-volume of the two nav messages, and it was the larger of the two blind spots.
+     *
+     * Why this matters for the exit-number question: the wire format omits fields it has no
+     * value for. Proven in the sibling ManeuverList message, where junction geometry
+     * (0x000a/0x000b) is present on only 56 of 65 cpType-1 maneuvers and 6 of 14 cpType-49, and
+     * absent entirely from every ramp we have captured. So a field that only appears when Apple
+     * has an exit number would be invisible until we drive an exit that has one — and with no
+     * else branch here, invisible even then. Pairs with Iap2RouteParser's [NAVI_TLV_NEW].
+     */
+    private fun reportUnknownFieldOnce(
+        b: ByteArray,
+        fieldId: Int,
+        valStart: Int,
+        valLen: Int,
+    ) {
+        if (!reportedUnknownFields.add(fieldId)) return
+        val end = minOf(valStart + valLen, b.size)
+        val hex = StringBuilder()
+        for (i in valStart until minOf(end, valStart + 48)) hex.append("%02x".format(b[i].toInt() and 0xFF))
+        val text = readStringNullTerminated(b, valStart, valLen).takeIf { s ->
+            s.isNotEmpty() && s.all { it.code in 32..126 }
+        }
+        logInfo(
+            "[NAVI_TLV_NEW] Unrecognized iAP2 route-guidance field 0x${fieldId.toString(16).padStart(4, '0')} " +
+                "len=$valLen value=$hex" + (text?.let { " ('$it')" } ?: "") +
+                " — not decoded (first occurrence only)",
+            tag = Logger.Tags.NAVI,
         )
     }
 
